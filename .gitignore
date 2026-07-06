@@ -49,3 +49,12 @@ scratchpad/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ── Repo scope: track only cfa_app/ (root-level scripts/docs kept locally) ─
+/reorganize_cfa.py
+/cfa_transfer.py
+/verify_transfer.py
+/requirements.txt
+/README.md
+/APP_PLAN.md
+/INFRA_REQUIREMENTS.md
