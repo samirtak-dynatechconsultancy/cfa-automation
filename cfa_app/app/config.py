@@ -36,6 +36,11 @@ class Settings:
     app_port: int = int(os.getenv("APP_PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # CSP frame-ancestors — who may embed this app in an <iframe>. Set to your SharePoint tenant
+    # to allow embedding, e.g. "https://*.sharepoint.com" (or the specific host). Empty = no header
+    # (browsers then allow framing by anyone).
+    frame_ancestors: str = os.getenv("FRAME_ANCESTORS", "")
+
     @property
     def graph_configured(self) -> bool:
         return bool(self.tenant_id and self.client_id and self.client_secret)
