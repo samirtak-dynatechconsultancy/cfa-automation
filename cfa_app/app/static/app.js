@@ -207,9 +207,15 @@ async function startRun() {
   }
   el("runBtn").disabled = true;
   el("result").classList.remove("hidden");
-  el("runStatus").textContent = "Starting…";
+  el("spinner").className = "spinner spin";
+  el("spinner").textContent = "";
+  el("stageText").textContent = "Starting…";
+  el("progressWrap").classList.add("hidden");
+  el("progressBar").style.width = "0%";
   el("runMessage").textContent = "";
   el("verifyBox").innerHTML = "";
+  el("noticeBox").innerHTML = "";
+  el("runLog").textContent = "";
   el("filesTable").innerHTML = "";
   try {
     const { run_id } = await api("/api/runs", {
@@ -219,7 +225,9 @@ async function startRun() {
     });
     pollRun(run_id);
   } catch (e) {
-    el("runStatus").textContent = "Error";
+    el("spinner").className = "spinner bad";
+    el("spinner").textContent = "✕";
+    el("stageText").textContent = "Something went wrong.";
     el("runMessage").textContent = e.message;
     el("runBtn").disabled = false;
   }
@@ -235,18 +243,38 @@ async function pollRun(runId) {
       el("runBtn").disabled = false;
     }
   } catch (e) {
-    el("runStatus").textContent = "Error";
+    el("spinner").className = "spinner bad";
+    el("spinner").textContent = "✕";
+    el("stageText").textContent = "Something went wrong.";
     el("runMessage").textContent = e.message;
     el("runBtn").disabled = false;
   }
 }
 
 function renderRun(r) {
-  el("runStatus").textContent = "Status: " + r.status.toUpperCase();
-  el("runStatus").className = "status " + r.status;
-  el("runMessage").textContent = r.message || "";
+  const running = (r.status === "queued" || r.status === "running");
 
-  // Notices (e.g. entity columns that had to be added) — shown above the live progress.
+  // Plain-language headline + spinner/check/cross.
+  el("stageText").textContent = r.stage || (running ? "Working…" : "");
+  const sp = el("spinner");
+  if (running) { sp.className = "spinner spin"; sp.textContent = ""; }
+  else if (r.status === "done") { sp.className = "spinner ok"; sp.textContent = "✓"; }
+  else { sp.className = "spinner bad"; sp.textContent = "✕"; }
+
+  // Progress bar (X of Y) once the total is known.
+  const pw = el("progressWrap");
+  if (r.total > 0) {
+    pw.classList.remove("hidden");
+    const pct = Math.max(0, Math.min(100, Math.round((r.processed / r.total) * 100)));
+    el("progressBar").style.width = pct + "%";
+  } else {
+    pw.classList.add("hidden");
+  }
+
+  // One-line summary once finished.
+  el("runMessage").textContent = running ? "" : (r.message || "");
+
+  // Notices (e.g. entity columns that had to be added).
   const noticeEl = el("noticeBox");
   if (noticeEl) {
     if (r.notices && r.notices.length) {

@@ -49,6 +49,22 @@ td.notes { color: var(--muted); font-size: .85rem; }
   padding: 10px 14px; margin: 10px 0; font-size: .9rem; }
 .notices ul { margin: 6px 0 0; padding-left: 18px; }
 .notices li { margin: 2px 0; }
+/* Live status: spinner + plain-language headline + progress bar */
+.stage-row { display: flex; align-items: center; gap: 12px; }
+.stage-text { font-size: 1.05rem; font-weight: 600; color: var(--ink); }
+.spinner { width: 22px; height: 22px; flex: 0 0 22px; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 50%; font-size: 15px; font-weight: 700; }
+.spinner.spin { border: 3px solid #d5deea; border-top-color: var(--brand);
+  animation: spin 0.8s linear infinite; }
+.spinner.ok { background: var(--ok); color: #fff; }
+.spinner.bad { background: var(--err); color: #fff; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.progress-wrap { height: 8px; background: #e5eaf1; border-radius: 6px; overflow: hidden;
+  margin: 12px 0 4px; }
+.progress-bar { height: 100%; width: 0; background: var(--brand); border-radius: 6px;
+  transition: width .3s ease; }
+.summary { margin: 8px 0; color: var(--ink); font-size: .95rem; }
+
 #logBox { margin: 10px 0; }
 #logBox summary { cursor: pointer; font-weight: 600; font-size: .9rem; color: #334155; }
 .runlog { max-height: 240px; overflow: auto; background: #0b2a4a; color: #d6e4ff;

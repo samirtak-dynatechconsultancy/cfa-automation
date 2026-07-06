@@ -101,7 +101,10 @@ class RunResult:
     verify: VerifyResult | None = None
     started_at: str | None = None
     finished_at: str | None = None
-    logs: list = field(default_factory=list)      # live progress lines for the UI
+    stage: str = ""                               # current plain-language activity (replaced live)
+    processed: int = 0                            # entity files done so far
+    total: int = 0                                # entity files to do (0 until known)
+    logs: list = field(default_factory=list)      # technical detail lines (collapsible)
     notices: list = field(default_factory=list)   # notable events (e.g. entity column added)
 
     def as_dict(self) -> dict:
@@ -113,6 +116,9 @@ class RunResult:
             "output_url": self.output_url,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "stage": self.stage,
+            "processed": self.processed,
+            "total": self.total,
             "logs": self.logs,
             "notices": self.notices,
             "verify": None

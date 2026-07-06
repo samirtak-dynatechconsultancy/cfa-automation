@@ -110,13 +110,17 @@ class RunManager:
 
         def emit(msg: str) -> None:
             ts = _dt.datetime.now().strftime("%H:%M:%S")
-            result.logs.append(f"{ts}  {msg}")
+            result.logs.append(f"{ts}  {msg}")     # technical detail (collapsible in the UI)
             log.info("run %s: %s", run_id, msg)
 
+        def stage(msg: str) -> None:
+            result.stage = msg                     # plain-language headline, replaced each time
+
+        stage("Getting ready…")
         emit(f"started — {params.year} P{params.period_from}-P{params.period_to}")
         try:
             # 1. Load master (a reusable, year-agnostic template).
-            emit("downloading master workbook…")
+            stage("Opening the master workbook…")
             master_bytes = self._graph.download_item(params.master_drive_id, params.master_item_id)
             values_wb, write_wb = load_master_pair(master_bytes)
             emit(f"master loaded ({len(master_bytes):,} bytes)")
@@ -124,97 +128,106 @@ class RunManager:
             if problems:
                 result.status = "error"
                 result.message = "Master check failed: " + "; ".join(problems)
+                stage("Couldn't use the master workbook.")
                 emit("ERROR: " + result.message)
                 return
 
-            # 2. Scan the source tree ONCE, pruning branches for other years/periods so we only
-            #    descend into the relevant folders instead of the whole tree.
+            # 2. Scan the source tree ONCE, pruning branches for other years/periods.
             period_set = set(periods)
 
             def keep_folder(name: str) -> bool:
                 fy = folder_year(name)
                 if fy is not None and fy != params.year:
-                    return False                       # a different year's folder
+                    return False
                 fp = folder_period(name)
                 if fp is not None and fp not in period_set:
-                    return False                       # a period folder outside the range
-                return True                            # region/entity/year-match/unknown -> descend
+                    return False
+                return True
 
-            emit(f"scanning for {params.year} P{params.period_from}-P{params.period_to} "
-                 "(skipping other years/periods)…")
-            last = {"n": 0}
+            stage("Looking through the folder for the entity files…")
+            emit(f"scanning for {params.year} P{params.period_from}-P{params.period_to}")
 
             def scan_progress(state):
-                if state["folders"] - last["n"] >= 25:
-                    last["n"] = state["folders"]
-                    emit(f"  scanning… {state['folders']} folders, {state['files']} files so far")
+                stage(f"Looking through the folder… {state['files']} file(s) found so far")
 
             all_files = self._graph.walk_files(params.source_drive_id, params.source_folder_id,
                                                on_progress=scan_progress, keep_folder=keep_folder)
             emit(f"scan complete: {len(all_files)} file(s) found")
 
-            sources = []
+            # 3. Pick the file to use for each entity + currency, across the period range.
+            stage("Choosing the latest file for each entity…")
+            work = []   # list of (period, selection)
             for period in periods:
-                selections = select_sources(all_files, params.year, period)
-                emit(f"P{period}: selected {len(selections)} entity file(s)")
-                for sel in selections:
-                    fr = FileResult(filename=sel.name, entity=sel.entity,
-                                    currency=sel.currency, path=sel.folder_path)
-                    try:
-                        raw = self._graph.download_item(params.source_drive_id, sel.item_id)
-                        src = read_source_from_bytes(raw, sel.name, cfg)
-                        if src is None:
-                            fr.messages.append("not a valid consistency-check source (no NUMBER/PERIOD/tab)")
-                            result.files.append(fr)
-                            emit(f"  SKIP {sel.entity} {sel.currency} — not a valid source ({sel.name})")
-                            continue
-                        if src.month != period or src.year != params.year:
-                            fr.messages.append(
-                                f"file says P{src.month}/{src.year}, expected P{period}/{params.year}")
-                            result.files.append(fr)
-                            emit(f"  SKIP {sel.entity} {sel.currency} — period/year mismatch ({sel.name})")
-                            continue
-                        src.currency = sel.currency
-                        fr = transfer_into_master(values_wb, write_wb, src, cfg)
-                        fr.currency = sel.currency
-                        fr.path = sel.folder_path
-                        result.files.append(fr)
-                        if fr.status == "done":
-                            sources.append(src)
-                        if fr.entity_added:
-                            notice = (f"Entity {fr.entity} ({sel.currency}) was not present in sheet "
-                                      f"{fr.sheet} — a new column was added for it.")
-                            result.notices.append(notice)
-                            emit("NOTE: " + notice)
-                        emit(f"  {fr.status.upper()} {fr.entity} {sel.currency} -> {fr.sheet} "
-                             f"({fr.written} lines)  [{sel.full_path}]")
-                    except Exception as e:  # one bad file must not kill the batch
-                        fr.status = "error"
-                        fr.messages.append(f"error: {e!r}")
-                        emit(f"  ERROR {sel.entity} {sel.currency}: {e}")
-                        result.files.append(fr)
-                        log.exception("run %s: ERROR on %s", run_id, sel.name)
+                for sel in select_sources(all_files, params.year, period):
+                    work.append((period, sel))
+            result.total = len(work)
+            emit(f"selected {result.total} entity file(s) to process")
 
-            if not result.files:
+            if not work:
                 result.status = "error"
                 result.message = (f"No CFA source files found for {params.year} / "
                                   f"P{params.period_from}-P{params.period_to} under the selected folder.")
+                stage("No matching files were found for the chosen year and period.")
                 emit("ERROR: " + result.message)
                 return
+
+            sources = []
+            for period, sel in work:
+                result.processed += 1
+                stage(f"Filling in entity {sel.entity} ({sel.currency}) — "
+                      f"{result.processed} of {result.total}…")
+                fr = FileResult(filename=sel.name, entity=sel.entity,
+                                currency=sel.currency, path=sel.folder_path)
+                try:
+                    raw = self._graph.download_item(params.source_drive_id, sel.item_id)
+                    src = read_source_from_bytes(raw, sel.name, cfg)
+                    if src is None:
+                        fr.messages.append("not a valid consistency-check source (no NUMBER/PERIOD/tab)")
+                        result.files.append(fr)
+                        emit(f"  SKIP {sel.entity} {sel.currency} — not a valid source ({sel.name})")
+                        continue
+                    if src.month != period or src.year != params.year:
+                        fr.messages.append(
+                            f"file says P{src.month}/{src.year}, expected P{period}/{params.year}")
+                        result.files.append(fr)
+                        emit(f"  SKIP {sel.entity} {sel.currency} — period/year mismatch ({sel.name})")
+                        continue
+                    src.currency = sel.currency
+                    fr = transfer_into_master(values_wb, write_wb, src, cfg)
+                    fr.currency = sel.currency
+                    fr.path = sel.folder_path
+                    result.files.append(fr)
+                    if fr.status == "done":
+                        sources.append(src)
+                    if fr.entity_added:
+                        notice = (f"Entity {fr.entity} ({sel.currency}) was not present in sheet "
+                                  f"{fr.sheet} — a new column was added for it.")
+                        result.notices.append(notice)
+                        emit("NOTE: " + notice)
+                    emit(f"  {fr.status.upper()} {fr.entity} {sel.currency} -> {fr.sheet} "
+                         f"({fr.written} lines)  [{sel.full_path}]")
+                except Exception as e:  # one bad file must not kill the batch
+                    fr.status = "error"
+                    fr.messages.append(f"error: {e!r}")
+                    emit(f"  ERROR {sel.entity} {sel.currency}: {e}")
+                    result.files.append(fr)
+                    log.exception("run %s: ERROR on %s", run_id, sel.name)
 
             if not sources:
                 result.status = "error"
                 result.message = "No source produced any written lines; nothing to save."
+                stage("Nothing could be written into the master.")
                 emit("ERROR: " + result.message)
                 return
 
-            # Save and upload to the output folder with a period/year name (versioned on collision).
-            emit("saving output workbook…")
+            # 4. Save + upload with a period/year name (versioned on collision).
+            stage("Saving the filled workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
             stem = _output_stem(params)
             out_name = self._unique_output_name(
                 params.output_drive_id, params.output_folder_id, stem)
-            emit(f"uploading '{out_name}' to the output folder…")
+            stage("Uploading the result to the output folder…")
+            emit(f"uploading '{out_name}'")
             uploaded = self._graph.upload_to_folder(
                 params.output_drive_id, params.output_folder_id, out_name, out_bytes)
             result.output_name = out_name
@@ -222,19 +235,23 @@ class RunManager:
             emit(f"uploaded ({len(out_bytes):,} bytes)")
 
             # Independent verification of the saved copy.
-            emit("verifying output…")
+            stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")
 
             done = sum(1 for f in result.files if f.status == "done")
             result.status = "done"
-            result.message = (f"{done} file(s) transferred, "
-                              f"{result.verify.checked} cells verified, "
-                              f"{result.verify.mismatches} mismatch(es).")
+            result.processed = result.total
+            mm = result.verify.mismatches
+            result.message = (f"{done} entity file(s) transferred and "
+                              f"{result.verify.checked:,} values checked — "
+                              + ("all correct." if mm == 0 else f"{mm} mismatch(es) found."))
+            stage("Done.")
             emit("DONE — " + result.message)
         except Exception as e:
             result.status = "error"
             result.message = f"{type(e).__name__}: {e}"
+            result.stage = "Something went wrong."
             ts = _dt.datetime.now().strftime("%H:%M:%S")
             result.logs.append(f"{ts}  FAILED: {result.message}")
             log.exception("run %s FAILED", run_id)

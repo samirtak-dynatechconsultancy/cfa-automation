@@ -87,16 +87,21 @@ timestamped copy goes to the output folder.</p>
 </div>
 
 <section id="result" class="card result hidden">
-  <h2>Result</h2>
-  <div id="runStatus" class="status"></div>
-  <div id="runMessage" class="muted"></div>
+  <div class="stage-row">
+    <span id="spinner" class="spinner spin"></span>
+    <span id="stageText" class="stage-text">Starting…</span>
+  </div>
+  <div id="progressWrap" class="progress-wrap hidden">
+    <div id="progressBar" class="progress-bar"></div>
+  </div>
+  <div id="runMessage" class="summary"></div>
   <div id="verifyBox"></div>
   <div id="noticeBox"></div>
-  <details id="logBox" open>
-    <summary>Live progress</summary>
+  <table id="filesTable" class="files"></table>
+  <details id="logBox">
+    <summary>Technical details</summary>
     <pre id="runLog" class="runlog"></pre>
   </details>
-  <table id="filesTable" class="files"></table>
 </section>
 
 <!-- SharePoint browser modal -->
