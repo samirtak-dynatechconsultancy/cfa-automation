@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Run — CFA Transfer{% endblock %}
+{% block content %}
+<h1>Run a transfer</h1>
+<p class="muted">Choose the <strong>year</strong> and <strong>period</strong>, point at a source root
+folder (it recurses through region/company/period subfolders and picks the latest file per entity),
+then Browse… or paste a <strong>Copy link</strong>. The master is never modified — a verified,
+timestamped copy goes to the output folder.</p>
+
+<section class="card compact">
+  <div class="field">
+    <div class="field-top">
+      <span class="field-label">Year &amp; Period</span>
+    </div>
+    <div class="field-ctrls">
+      <label class="inline">Year
+        <input id="year" type="number" min="2000" max="2100" value="{{ defaults.default_year or '' }}"
+               placeholder="2026" style="width:90px">
+      </label>
+      <label class="inline">Period from
+        <select id="period_from" style="width:80px" onchange="syncPeriodTo()">
+          <option value="">P?</option>
+          {% for p in range(1, 13) %}<option value="{{ p }}">P{{ p }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="inline">to
+        <select id="period_to" style="width:80px">
+          <option value="">P?</option>
+          {% for p in range(1, 13) %}<option value="{{ p }}">P{{ p }}</option>{% endfor %}
+        </select>
+      </label>
+      <span class="muted" style="font-size:.8rem">(same value = a single period)</span>
+    </div>
+  </div>
+
+  <div class="field">
+    <div class="field-top">
+      <span class="field-label">1 · Source root folder <small>(recurses to find entities)</small></span>
+      <span id="source_folder_name" class="chosen">{{ defaults.source_folder_name or "— none —" }}</span>
+    </div>
+    <div class="field-ctrls">
+      <input type="hidden" id="source_drive_id" value="{{ defaults.source_drive_id }}">
+      <input type="hidden" id="source_folder_id" value="{{ defaults.source_folder_id }}">
+      <button type="button" onclick="openBrowser('folder','source')">Browse…</button>
+      <input class="linkin" id="link_source" data-target="source" data-expect="folder"
+             placeholder="or paste a Copy link" oninput="debouncedInline(this)"
+             value="{{ defaults.source_link }}">
+      <span class="resolved" id="resolved_source"></span>
+    </div>
+  </div>
+
+  <div class="field">
+    <div class="field-top">
+      <span class="field-label">2 · Master workbook <small>(verification file)</small></span>
+      <span id="master_name" class="chosen">{{ defaults.master_name or "— none —" }}</span>
+    </div>
+    <div class="field-ctrls">
+      <input type="hidden" id="master_drive_id" value="{{ defaults.master_drive_id }}">
+      <input type="hidden" id="master_item_id" value="{{ defaults.master_item_id }}">
+      <button type="button" onclick="openBrowser('file','master')">Browse…</button>
+      <input class="linkin" id="link_master" data-target="master" data-expect="file"
+             placeholder="or paste a Copy link" oninput="debouncedInline(this)"
+             value="{{ defaults.master_link }}">
+      <span class="resolved" id="resolved_master"></span>
+    </div>
+  </div>
+
+  <div class="field">
+    <div class="field-top">
+      <span class="field-label">3 · Output folder</span>
+      <span id="output_folder_name" class="chosen">{{ defaults.output_folder_name or "— none —" }}</span>
+    </div>
+    <div class="field-ctrls">
+      <input type="hidden" id="output_drive_id" value="{{ defaults.output_drive_id }}">
+      <input type="hidden" id="output_folder_id" value="{{ defaults.output_folder_id }}">
+      <button type="button" onclick="openBrowser('folder','output')">Browse…</button>
+      <input class="linkin" id="link_output" data-target="output" data-expect="folder"
+             placeholder="or paste a Copy link" oninput="debouncedInline(this)"
+             value="{{ defaults.output_link }}">
+      <span class="resolved" id="resolved_output"></span>
+    </div>
+  </div>
+</section>
+
+<div class="actions">
+  <button id="runBtn" class="primary" onclick="startRun()">Start run</button>
+</div>
+
+<section id="result" class="card result hidden">
+  <h2>Result</h2>
+  <div id="runStatus" class="status"></div>
+  <div id="runMessage" class="muted"></div>
+  <div id="verifyBox"></div>
+  <div id="noticeBox"></div>
+  <details id="logBox" open>
+    <summary>Live progress</summary>
+    <pre id="runLog" class="runlog"></pre>
+  </details>
+  <table id="filesTable" class="files"></table>
+</section>
+
+<!-- SharePoint browser modal -->
+<div id="browser" class="modal hidden">
+  <div class="modal-body">
+    <div class="modal-head">
+      <strong id="browserTitle">Browse SharePoint</strong>
+      <button type="button" class="close" onclick="closeBrowser()">✕</button>
+    </div>
+
+    <div class="browser-step">
+      <label>Site</label>
+      <div class="row">
+        <input id="siteQuery" placeholder="Search sites…" oninput="debouncedSiteSearch()">
+      </div>
+      <ul id="siteList" class="list"></ul>
+    </div>
+
+    <div id="driveStep" class="browser-step hidden">
+      <label>Document library</label>
+      <ul id="driveList" class="list"></ul>
+    </div>
+
+    <div id="itemStep" class="browser-step hidden">
+      <div class="breadcrumb" id="breadcrumb"></div>
+      <ul id="itemList" class="list"></ul>
+      <div id="folderPickBar" class="pickbar hidden">
+        <button type="button" class="primary" onclick="pickCurrentFolder()">Select this folder</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="defaults-json" hidden>{{ defaults | tojson }}</div>
+{% endblock %}

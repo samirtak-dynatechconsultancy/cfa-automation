@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Admin — CFA Transfer{% endblock %}
+{% block content %}
+<h1>Admin — defaults & detection</h1>
+{% if not persisted %}
+<div class="banner warn">
+  No settings site is configured (<code>SETTINGS_SITE_URL</code>). Changes are kept in memory only
+  and will be lost on restart. Set the site URL in <code>.env</code> and the app creates a
+  <strong>{{ values.settings_list_name if values.settings_list_name else "CFA App Settings" }}</strong>
+  SharePoint list there automatically.
+</div>
+{% endif %}
+
+<p class="muted">These defaults pre-fill the Run page. Detection settings control how the table is
+located inside each workbook (header anchors, tab name, scan bounds).</p>
+
+<form id="adminForm" onsubmit="return saveSettings(event)">
+  <section class="card">
+    <h2>Run defaults</h2>
+    <p class="muted">Paste the SharePoint <strong>Copy link</strong> URL for each. The app resolves
+      it automatically — no ids to enter.</p>
+
+    <div class="linkrow">
+      <label>Source folder — SharePoint link
+        <input name="source_link" data-target="source" data-expect="folder"
+               placeholder="Paste Copy link to the source folder…" oninput="debouncedResolve(this)">
+      </label>
+      <div class="resolved" id="resolved_source"></div>
+      <input type="hidden" name="source_drive_id"><input type="hidden" name="source_folder_id">
+      <input type="hidden" name="source_folder_name">
+    </div>
+
+    <div class="linkrow">
+      <label>Master workbook — SharePoint link
+        <input name="master_link" data-target="master" data-expect="file"
+               placeholder="Paste Copy link to the master .xlsx…" oninput="debouncedResolve(this)">
+      </label>
+      <div class="resolved" id="resolved_master"></div>
+      <input type="hidden" name="master_drive_id"><input type="hidden" name="master_item_id">
+      <input type="hidden" name="master_name">
+    </div>
+
+    <div class="linkrow">
+      <label>Output folder — SharePoint link
+        <input name="output_link" data-target="output" data-expect="folder"
+               placeholder="Paste Copy link to the output folder…" oninput="debouncedResolve(this)">
+      </label>
+      <div class="resolved" id="resolved_output"></div>
+      <input type="hidden" name="output_drive_id"><input type="hidden" name="output_folder_id">
+      <input type="hidden" name="output_folder_name">
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Detection</h2>
+    <div class="grid">
+      <label>Source tab<input name="source_tab"></label>
+      <label>Target name token<input name="target_name_token"></label>
+      <label>FORM header<input name="form_header"></label>
+      <label>LINE header<input name="line_header"></label>
+      <label>CHECK header<input name="check_header"></label>
+      <label>Header scan rows<input name="header_scan_rows" type="number"></label>
+      <label>Entity row scan<input name="entity_row_scan" type="number"></label>
+      <label>Max data rows<input name="max_data_rows" type="number"></label>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button class="primary" type="submit">Save defaults</button>
+    <span id="saveMsg" class="muted"></span>
+  </div>
+</form>
+
+<div id="values-json" hidden>{{ values | tojson }}</div>
+{% endblock %}
+{% block scripts %}<script>hydrateAdmin();</script>{% endblock %}

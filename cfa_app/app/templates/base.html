@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CFA Transfer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">CFA Consistency-Check Transfer</div>
+    <nav>
+      <a href="/">Run</a>
+      <a href="/admin">Admin</a>
+    </nav>
+  </header>
+
+  {% if not graph_configured %}
+  <div class="banner warn">
+    Microsoft Graph is not configured. Set <code>GRAPH_TENANT_ID</code>,
+    <code>GRAPH_CLIENT_ID</code> and <code>GRAPH_CLIENT_SECRET</code> in the <code>.env</code> file,
+    then restart. Browsing and runs will fail until then.
+  </div>
+  {% endif %}
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
