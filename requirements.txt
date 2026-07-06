@@ -1,0 +1,3 @@
+# Azure App Service (and other root-based builders) install from the repo root.
+# The application and its real dependency list live in cfa_app/.
+-r cfa_app/requirements.txt

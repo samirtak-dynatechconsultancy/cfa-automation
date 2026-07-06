@@ -51,10 +51,10 @@ Thumbs.db
 desktop.ini
 
 # ── Repo scope: track only cfa_app/ (root-level scripts/docs kept locally) ─
+# NOTE: root requirements.txt is intentionally tracked (Azure/root-based builds need it).
 /reorganize_cfa.py
 /cfa_transfer.py
 /verify_transfer.py
-/requirements.txt
 /README.md
 /APP_PLAN.md
 /INFRA_REQUIREMENTS.md
