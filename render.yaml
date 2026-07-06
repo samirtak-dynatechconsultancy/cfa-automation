@@ -1,0 +1,26 @@
+# Render blueprint — runs the FastAPI app with uvicorn (native ASGI, no WSGI bridge).
+# Deploy: push to GitHub, then in Render: New + -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: cfa-automation
+    runtime: python
+    plan: free
+    rootDir: cfa_app
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Set these as secrets in the Render dashboard (sync:false = not stored in git):
+      - key: GRAPH_TENANT_ID
+        sync: false
+      - key: GRAPH_CLIENT_ID
+        sync: false
+      - key: GRAPH_CLIENT_SECRET
+        sync: false
+      - key: SETTINGS_SITE_URL
+        sync: false
+      - key: SETTINGS_LIST_NAME
+        value: "CFA App Settings"
+      - key: RUNS_LIST_NAME
+        value: "CFA App Runs"
