@@ -8,6 +8,7 @@ interface is what callers depend on, so that swap is contained here).
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import threading
 import uuid
 from dataclasses import dataclass
@@ -47,6 +48,21 @@ class RunParams:
     output_folder_name: str = ""
 
 
+def _output_stem(params: "RunParams") -> str:
+    """Build the output base name, e.g. 'CFA verification_P5_2026' or 'CFA verification_P4-P6_2026'.
+
+    Strips any trailing period/year label already on the master name so it isn't duplicated.
+    """
+    base = params.master_name[:-5] if params.master_name.lower().endswith(".xlsx") \
+        else params.master_name
+    base = re.sub(r"[ _-]+P\d{1,2}([ _-]+\d{4})?\s*$", "", base, flags=re.IGNORECASE).strip(" _-")
+    if params.period_from == params.period_to:
+        period_part = f"P{params.period_from}"
+    else:
+        period_part = f"P{params.period_from}-P{params.period_to}"
+    return f"{base}_{period_part}_{params.year}"
+
+
 class RunManager:
     def __init__(self, graph: GraphClient, store: SettingsStore, run_log: RunLogStore):
         self._graph = graph
@@ -68,6 +84,21 @@ class RunManager:
     def get(self, run_id: str) -> RunResult | None:
         with self._lock:
             return self._runs.get(run_id)
+
+    def _unique_output_name(self, drive_id: str, folder_id: str, stem: str) -> str:
+        """'{stem}.xlsx', or '{stem}_v1.xlsx', '{stem}_v2.xlsx', … if that name already exists."""
+        try:
+            existing = {it["name"].lower() for it in self._graph.list_children(drive_id, folder_id)
+                        if not it["is_folder"]}
+        except Exception:  # if listing fails, fall back to the plain name
+            existing = set()
+        candidate = f"{stem}.xlsx"
+        if candidate.lower() not in existing:
+            return candidate
+        n = 1
+        while f"{stem}_v{n}.xlsx".lower() in existing:
+            n += 1
+        return f"{stem}_v{n}.xlsx"
 
     # -- worker ------------------------------------------------------------
     def _execute(self, run_id: str, params: RunParams) -> None:
@@ -177,13 +208,12 @@ class RunManager:
                 emit("ERROR: " + result.message)
                 return
 
-            # Save timestamped copy and upload to the output folder.
+            # Save and upload to the output folder with a period/year name (versioned on collision).
             emit("saving output workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
-            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            base = params.master_name[:-5] if params.master_name.lower().endswith(".xlsx") \
-                else params.master_name
-            out_name = f"{base} _autofilled_{ts}.xlsx"
+            stem = _output_stem(params)
+            out_name = self._unique_output_name(
+                params.output_drive_id, params.output_folder_id, stem)
             emit(f"uploading '{out_name}' to the output folder…")
             uploaded = self._graph.upload_to_folder(
                 params.output_drive_id, params.output_folder_id, out_name, out_bytes)
