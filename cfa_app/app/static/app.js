@@ -223,6 +223,7 @@ async function startRun() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    try { localStorage.setItem("cfa_run_id", run_id); } catch (e) {}
     pollRun(run_id);
   } catch (e) {
     el("spinner").className = "spinner bad";
@@ -429,3 +430,26 @@ async function saveSettings(ev) {
   } catch (e) { msg.textContent = "Error: " + e.message; }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Resume after a page refresh: re-attach to the last run (server keeps running).
+// ---------------------------------------------------------------------------
+async function resumeRun() {
+  if (!document.getElementById("result")) return;          // only on the run page
+  let id = null;
+  try { id = localStorage.getItem("cfa_run_id"); } catch (e) {}
+  if (!id) return;
+  try {
+    const r = await api("/api/runs/" + id);                // 404 -> throws (run gone)
+    el("result").classList.remove("hidden");
+    renderRun(r);
+    if (r.status === "queued" || r.status === "running") {
+      el("runBtn").disabled = true;
+      pollRun(id);                                          // keep following it live
+    }
+  } catch (e) {
+    try { localStorage.removeItem("cfa_run_id"); } catch (e2) {}  // stale / server restarted
+  }
+}
+
+resumeRun();
