@@ -200,7 +200,6 @@ async function startRun() {
     output_folder_id: el("output_folder_id").value,
     source_folder_name: el("source_folder_name").textContent.trim(),
     output_folder_name: el("output_folder_name").textContent.trim(),
-    triggered_by: el("triggered_by") ? el("triggered_by").value.trim() : "",
   };
   if (!body.source_folder_id || !body.master_item_id || !body.output_folder_id) {
     alert("Please select a source folder, a master workbook, and an output folder.");
@@ -470,27 +469,3 @@ async function resumeRun() {
 }
 
 resumeRun();
-
-// ---------------------------------------------------------------------------
-// Operator name: passed in from the embedding SharePoint page (iframe can't read
-// SharePoint's own context), via ?user= on the embed URL or a postMessage.
-// ---------------------------------------------------------------------------
-function setUserName(name) {
-  if (!name) return;
-  const f = document.getElementById("triggered_by");
-  if (f) f.value = name;
-  try { localStorage.setItem("cfa_user", name); } catch (e) {}
-}
-(function initUserName() {
-  const f = document.getElementById("triggered_by");
-  if (!f) return;
-  const fromUrl = new URLSearchParams(location.search).get("user");
-  if (fromUrl) { setUserName(fromUrl); return; }
-  try { if (!f.value) f.value = localStorage.getItem("cfa_user") || ""; } catch (e) {}
-})();
-// A one-liner on the SharePoint page can do:
-//   iframe.contentWindow.postMessage({ type: "cfa-user", user: _spPageContextInfo.userDisplayName }, "*")
-window.addEventListener("message", function (e) {
-  const d = e.data;
-  if (d && d.type === "cfa-user" && d.user) setUserName(String(d.user));
-});

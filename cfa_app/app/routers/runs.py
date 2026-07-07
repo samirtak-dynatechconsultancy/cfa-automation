@@ -24,7 +24,6 @@ class StartRun(BaseModel):
     output_folder_id: str
     source_folder_name: str = ""
     output_folder_name: str = ""
-    triggered_by: str = ""
 
 
 @router.post("")

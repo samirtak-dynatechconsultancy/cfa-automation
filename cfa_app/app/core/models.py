@@ -104,7 +104,6 @@ class RunResult:
     stage: str = ""                               # current plain-language activity (replaced live)
     processed: int = 0                            # entity files done so far
     total: int = 0                                # entity files to do (0 until known)
-    triggered_by: str = ""                        # display name of who started the run
     logs: list = field(default_factory=list)      # technical detail lines (collapsible)
     notices: list = field(default_factory=list)   # notable events (e.g. entity column added)
 
@@ -120,7 +119,6 @@ class RunResult:
             "stage": self.stage,
             "processed": self.processed,
             "total": self.total,
-            "triggered_by": self.triggered_by,
             "logs": self.logs,
             "notices": self.notices,
             "verify": None
