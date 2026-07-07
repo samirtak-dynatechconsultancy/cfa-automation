@@ -69,6 +69,7 @@ class RunManager:
         self._store = store
         self._run_log = run_log
         self._runs: dict[str, RunResult] = {}
+        self._latest_id: str | None = None
         self._lock = threading.Lock()
 
     def start(self, params: RunParams) -> str:
@@ -76,6 +77,7 @@ class RunManager:
         result = RunResult(run_id=run_id, status="queued")
         with self._lock:
             self._runs[run_id] = result
+            self._latest_id = run_id
         log.info("run %s queued (master=%s, P%d-P%d)", run_id, params.master_name,
                  params.period_from, params.period_to)
         threading.Thread(target=self._execute, args=(run_id, params), daemon=True).start()
@@ -84,6 +86,11 @@ class RunManager:
     def get(self, run_id: str) -> RunResult | None:
         with self._lock:
             return self._runs.get(run_id)
+
+    def latest(self) -> RunResult | None:
+        """The most recently started run (used to re-attach after a refresh, incl. embedded)."""
+        with self._lock:
+            return self._runs.get(self._latest_id) if self._latest_id else None
 
     def _unique_output_name(self, drive_id: str, folder_id: str, stem: str) -> str:
         """'{stem}.xlsx', or '{stem}_v1.xlsx', '{stem}_v2.xlsx', … if that name already exists."""

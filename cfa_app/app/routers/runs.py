@@ -37,6 +37,13 @@ def start_run(body: StartRun):
     return {"run_id": run_id}
 
 
+@router.get("/latest")
+def latest_run():
+    """The most recent run (for re-attaching after a refresh). {} if there is none."""
+    result = get_run_manager().latest()
+    return result.as_dict() if result is not None else {}
+
+
 @router.get("/{run_id}")
 def get_run(run_id: str):
     result = get_run_manager().get(run_id)

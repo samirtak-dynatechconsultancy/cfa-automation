@@ -434,22 +434,38 @@ async function saveSettings(ev) {
 // ---------------------------------------------------------------------------
 // Resume after a page refresh: re-attach to the last run (server keeps running).
 // ---------------------------------------------------------------------------
+function attachRun(id, r) {
+  el("result").classList.remove("hidden");
+  renderRun(r);
+  if (r.status === "queued" || r.status === "running") {
+    el("runBtn").disabled = true;
+    pollRun(id);                                            // keep following it live
+  }
+}
+
 async function resumeRun() {
   if (!document.getElementById("result")) return;          // only on the run page
+
+  // 1. Prefer the id saved in this browser (works for direct, non-embedded use).
   let id = null;
   try { id = localStorage.getItem("cfa_run_id"); } catch (e) {}
-  if (!id) return;
-  try {
-    const r = await api("/api/runs/" + id);                // 404 -> throws (run gone)
-    el("result").classList.remove("hidden");
-    renderRun(r);
-    if (r.status === "queued" || r.status === "running") {
-      el("runBtn").disabled = true;
-      pollRun(id);                                          // keep following it live
+  if (id) {
+    try {
+      attachRun(id, await api("/api/runs/" + id));
+      return;
+    } catch (e) {
+      try { localStorage.removeItem("cfa_run_id"); } catch (e2) {}   // stale / server restarted
     }
-  } catch (e) {
-    try { localStorage.removeItem("cfa_run_id"); } catch (e2) {}  // stale / server restarted
   }
+
+  // 2. Fallback for embedded iframes (SharePoint) where localStorage may be blocked:
+  //    ask the server for the most recent run and re-attach if it's still in progress.
+  try {
+    const r = await api("/api/runs/latest");
+    if (r && r.run_id && (r.status === "running" || r.status === "queued")) {
+      attachRun(r.run_id, r);
+    }
+  } catch (e) {}
 }
 
 resumeRun();
