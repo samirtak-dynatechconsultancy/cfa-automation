@@ -46,6 +46,7 @@ class RunParams:
     output_folder_id: str
     source_folder_name: str = ""
     output_folder_name: str = ""
+    triggered_by: str = ""            # display name passed in from SharePoint (URL param / postMessage)
 
 
 def _output_stem(params: "RunParams") -> str:
@@ -112,6 +113,7 @@ class RunManager:
         result = self._runs[run_id]
         result.status = "running"
         result.started_at = _dt.datetime.now().isoformat(timespec="seconds")
+        result.triggered_by = (params.triggered_by or "").strip()
         cfg: DetectionConfig = self._store.detection_config()
         periods = list(range(params.period_from, params.period_to + 1))
 
