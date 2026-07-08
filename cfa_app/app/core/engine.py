@@ -191,19 +191,23 @@ def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
 
 
 def load_master_pair(data: bytes):
-    """Load the master TWICE from the same bytes.
+    """Load the master TWICE from the same bytes, both with data_only=True.
 
-    Returns (values_wb, write_wb):
-      * values_wb (data_only=True)  -> read the CACHED VALUES of the FORM/LINE label cells and
-        entity row. Some master labels are formulas (e.g. external-workbook references), so their
-        text is only available as a cached value, not from the formula string.
-      * write_wb  (data_only=False) -> the workbook we write into and save, so formulas, styles and
-        conditional formatting are preserved.
-    Row and column indices are identical between the two loads, so we detect on `values_wb` and
-    write into `write_wb` at the same coordinates.
+    Returns (values_wb, write_wb) — both hold the CACHED VALUES (not formulas):
+      * values_wb -> read FORM/LINE labels and the entity row for detection.
+      * write_wb  -> the copy we write into and save.
+
+    Why data_only for the write copy? This master references an EXTERNAL workbook (30 external
+    links to a SharePoint file) in its label formulas. When openpyxl re-saves those external links
+    Excel flags the result as "damaged / needs repair". Loading data_only materialises every formula
+    to its last-cached value, so we can drop the external links entirely and emit a self-contained
+    workbook — no external references, nothing for Excel to repair. Styles and conditional
+    formatting (the red NOT-EQUAL highlight) are preserved; only live formulas become static values,
+    which is what a point-in-time verification copy should be anyway.
     """
     values_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-    write_wb = openpyxl.load_workbook(io.BytesIO(data))
+    write_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    write_wb._external_links = []      # drop external-workbook links -> self-contained, no repair
     return values_wb, write_wb
 
 
