@@ -13,6 +13,11 @@ import re
 # Folders whose contents are superseded / not to be scanned.
 IGNORE_DIRS = {"old", "archive", "_archive", "olds", "bak"}
 
+# Region folders sit directly under the year (Year > Region > Entity > P{no.} > file). These are the
+# region groups the master verification sheet is organised into (row above the entity numbers).
+KNOWN_REGIONS = {"AMS", "APAC", "EMEA", "HOLDINGS"}
+_REGION_CANON = {"HOLDING": "HOLDINGS"}
+
 CURRENCIES = {"USD", "EUR", "EGP", "MYR", "GBP", "CAD", "CHF", "JPY", "CNY", "INR",
               "AUD", "SGD", "HKD", "MXN", "BRL", "ZAR", "SEK", "NOK", "DKK", "PLN", "TRY", "AED"}
 
@@ -69,6 +74,32 @@ def folder_year(name: str):
     """If a folder name IS a bare year (e.g. '2026'), return it; else None."""
     m = _FULL_YEAR_RE.match(name.strip())
     return int(m.group(1)) if m else None
+
+
+def canon_region(s: str) -> str:
+    """Normalise a region label for matching ('Holdings' -> 'HOLDINGS', 'holding' -> 'HOLDINGS')."""
+    u = re.sub(r"\s+", " ", str(s or "").strip()).upper()
+    return _REGION_CANON.get(u, u)
+
+
+def folder_region(folder_path: str, year: int | None = None):
+    """Region = the folder directly inside the year folder. '/2026/EMEA/055/P05' -> 'EMEA'.
+
+    Returns the raw region token as it appears in the path (or None). The caller matches it to the
+    master's region header case-insensitively via canon_region().
+    """
+    if not folder_path:
+        return None
+    parts = [p for p in re.split(r"[\\/]+", str(folder_path)) if p.strip()]
+    if year is not None:
+        ystr = str(year)
+        for i, p in enumerate(parts):
+            if p.strip() == ystr or folder_year(p) == year:
+                return parts[i + 1].strip() if i + 1 < len(parts) else None
+    for p in parts:                                   # fallback: any part that is a known region
+        if canon_region(p) in KNOWN_REGIONS:
+            return p.strip()
+    return None
 
 
 def folder_period(name: str):

@@ -16,6 +16,7 @@ import io
 import re
 
 import openpyxl
+from openpyxl.styles import PatternFill
 
 from .detection import (
     find_entity_row_and_col,
@@ -148,6 +149,122 @@ def _extend_not_equal_cf(write_ws, entity_col: int, first_row: int, last_row: in
     return added
 
 
+def _rebuild_cf_shifted(write_ws, insert_idx: int) -> None:
+    """Rebuild the sheet's conditional formatting after insert_cols(), shifting ranges to match.
+
+    openpyxl.insert_cols() moves cell values + styles but leaves conditional-formatting ranges
+    untouched, which would misalign the red 'NOT EQUAL' highlights. Columns at/after insert_idx
+    shift right by one; ranges spanning the insertion point are extended by one.
+    """
+    from openpyxl.formatting.formatting import ConditionalFormattingList
+    from openpyxl.worksheet.cell_range import CellRange
+
+    blocks = [(cf.sqref, list(cf.rules)) for cf in write_ws.conditional_formatting]
+    new = ConditionalFormattingList()
+    for sqref, rules in blocks:
+        parts = []
+        for cr in sqref.ranges:
+            mn = cr.min_col + 1 if cr.min_col >= insert_idx else cr.min_col
+            mx = cr.max_col + 1 if cr.max_col >= insert_idx else cr.max_col
+            parts.append(CellRange(min_col=mn, min_row=cr.min_row,
+                                   max_col=mx, max_row=cr.max_row).coord)
+        joined = " ".join(parts)
+        for rule in rules:
+            new.add(joined, rule)
+    write_ws.conditional_formatting = new
+
+
+def _copy_column_style(write_ws, src_col: int, dst_col: int) -> None:
+    """Give a freshly-inserted (blank) column the same look as its left neighbour (styles + width)."""
+    from copy import copy
+    from openpyxl.utils import get_column_letter
+
+    for r in range(1, (write_ws.max_row or 1) + 1):
+        s = write_ws.cell(row=r, column=src_col)
+        if not s.has_style:
+            continue
+        d = write_ws.cell(row=r, column=dst_col)
+        d.font = copy(s.font)
+        d.border = copy(s.border)
+        d.fill = copy(s.fill)
+        d.number_format = s.number_format
+        d.protection = copy(s.protection)
+        d.alignment = copy(s.alignment)
+    src_letter, dst_letter = get_column_letter(src_col), get_column_letter(dst_col)
+    if src_letter in write_ws.column_dimensions and write_ws.column_dimensions[src_letter].width:
+        write_ws.column_dimensions[dst_letter].width = write_ws.column_dimensions[src_letter].width
+
+
+def _insert_entity_in_region(write_ws, wget, entity_row: int, scan_cols: int, region: str):
+    """Insert a new (blank) entity column at the END of `region`'s block; return its index, or None.
+
+    The region header row sits directly above the entity-number row (e.g. 'Holdings' / 'AMS' /
+    'EMEA' / 'APAC'). Entities are contiguous under each header, so we insert just before the next
+    region's first column (or after the last entity, for the rightmost region), shifting the rest
+    right and re-aligning conditional formatting + styling.
+    """
+    from .naming import canon_region
+
+    region_row = entity_row - 1
+    if region_row < 1:
+        return None
+
+    first_ent_col = None
+    last_ent_col = 0
+    for c in range(1, scan_cols + 1):
+        v = wget(entity_row, c)
+        if v is not None and _ENTITY_CELL_RE.match(str(v).strip()):
+            if first_ent_col is None:
+                first_ent_col = c
+            last_ent_col = c
+    if first_ent_col is None:
+        return None
+
+    headers = []                                      # (col, canonical name) for each region block
+    for c in range(first_ent_col, last_ent_col + 1):
+        v = wget(region_row, c)
+        if v is not None and str(v).strip():
+            headers.append((c, canon_region(str(v))))
+    if not headers:
+        return None
+
+    target = canon_region(region)
+    match_i = next((i for i, (_c, name) in enumerate(headers) if name == target), None)
+    if match_i is None:
+        return None
+
+    if match_i + 1 < len(headers):
+        insert_idx = headers[match_i + 1][0]          # start of the next region's block
+    else:
+        insert_idx = last_ent_col + 1                 # rightmost region -> after its last entity
+
+    write_ws.insert_cols(insert_idx, 1)
+    _rebuild_cf_shifted(write_ws, insert_idx)
+    _copy_column_style(write_ws, insert_idx - 1, insert_idx)
+    return insert_idx
+
+
+# Highlight for the heading of an entity column we added (so new entities are easy to spot).
+_NEW_ENTITY_FILL = PatternFill(fill_type="solid", fgColor="FFFF00")   # yellow
+
+
+def _place_new_entity_column(write_ws, wget, entity_row: int, scan_cols: int,
+                             entity: str, region: str | None) -> int:
+    """Add a column for a new entity: under its region block when known, else at the far right.
+
+    The entity heading cell is filled yellow so newly-added entities stand out in the workbook.
+    """
+    col = None
+    if region:
+        col = _insert_entity_in_region(write_ws, wget, entity_row, scan_cols, region)
+    if col is None:
+        col = _next_entity_column(wget, entity_row, scan_cols)
+    cell = write_ws.cell(row=entity_row, column=col)
+    cell.value = entity
+    cell.fill = _NEW_ENTITY_FILL
+    return col
+
+
 def period_sheet_name(period: int, currency: str) -> str:
     """USD lands on 'P{period}'; other currencies on 'P{period} {CUR}' (created on demand)."""
     base = f"P{period}"
@@ -270,11 +387,13 @@ def match_source_rows(src_rows, t_keys: dict):
 # Transfer
 # ---------------------------------------------------------------------------
 
-def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionConfig) -> FileResult:
+def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionConfig,
+                         region: str | None = None) -> FileResult:
     """Write one source's check column into the matching master sheet + entity column (in memory).
 
     Detection/label reads come from `values_wb` (cached values); writes go to `write_wb` at the
-    same coordinates so styling / conditional formatting is preserved.
+    same coordinates so styling / conditional formatting is preserved. `region` (from the source's
+    folder path) places a newly-added entity column under the matching region header block.
     """
     result = FileResult(filename=src.filename, entity=src.entity, currency=src.currency,
                         period=f"P{src.month} ({src.month}/{src.year})")
@@ -302,23 +421,28 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 
-    ent = find_entity_row_and_col(get, cfg.entity_row_scan, max_col, src.entity)
-    if ent is None:
-        # Entity has no column yet -> add one on the target sheet and record it as a notice.
-        entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
-        if entity_row is None:
-            result.messages.append(
-                f"entity '{src.entity}' not found and no entity row detected in '{base_name}' -> skipped")
-            return result
-        wget = _ws_getter(write_ws)
-        w_cols = min(write_ws.max_column or max_col, 400)
-        entity_col = _next_entity_column(wget, entity_row, w_cols)
-        write_ws.cell(row=entity_row, column=entity_col).value = src.entity
-        result.entity_added = True
+    # The entity-number row is stable (insertions are column-wise). Detect it on the label sheet.
+    entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+    if entity_row is None:
         result.messages.append(
-            f"entity '{src.entity}' was not in '{result.sheet}' — added as new column {entity_col}")
+            f"entity '{src.entity}' not found and no entity row detected in '{base_name}' -> skipped")
+        return result
+
+    # Resolve the entity's column ON THE WRITE SHEET, so it stays correct even when an earlier file
+    # in this run inserted a new column (which shifts everything to its right on the write side only).
+    wget = _ws_getter(write_ws)
+    w_cols = min(write_ws.max_column or max_col, 400)
+    found = find_entity_row_and_col(wget, cfg.entity_row_scan, w_cols, src.entity)
+    if found is not None:
+        _entity_row, entity_col = found
     else:
-        _entity_row, entity_col = ent
+        # Entity has no column yet -> add one (under its region block when known) and note it.
+        entity_col = _place_new_entity_column(write_ws, wget, entity_row, w_cols, src.entity, region)
+        result.entity_added = True
+        msg = f"entity '{src.entity}' was not in '{result.sheet}' — added as new column {entity_col}"
+        if region:
+            msg += f" under region '{region}'"
+        result.messages.append(msg)
 
     th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
     if th is None:

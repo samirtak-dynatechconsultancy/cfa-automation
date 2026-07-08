@@ -23,7 +23,7 @@ from ..core.engine import (
     verify_output,
 )
 from ..core.models import DetectionConfig, FileResult, RunResult
-from ..core.naming import folder_period, folder_year
+from ..core.naming import folder_period, folder_region, folder_year
 from ..graph.client import GraphClient
 from ..logging_config import get_logger
 from .run_log import RunLogStore
@@ -200,7 +200,8 @@ class RunManager:
                         emit(f"  SKIP {sel.entity} {sel.currency} — period/year mismatch ({sel.name})")
                         continue
                     src.currency = sel.currency
-                    fr = transfer_into_master(values_wb, write_wb, src, cfg)
+                    region = folder_region(sel.folder_path, params.year)
+                    fr = transfer_into_master(values_wb, write_wb, src, cfg, region=region)
                     fr.currency = sel.currency
                     fr.path = sel.folder_path
                     result.files.append(fr)
