@@ -199,11 +199,23 @@ class RunManager:
                         result.files.append(fr)
                         emit(f"  SKIP {sel.entity} {sel.currency} — period/year mismatch ({sel.name})")
                         continue
+                    # The filename token is authoritative for the entity + currency (same reason
+                    # select_sources groups by it). The file's own NUMBER cell can be stale after a
+                    # copy/rename; if it disagrees, note it but trust the filename — otherwise a file
+                    # named for entity X would be written into (and overwrite) whatever entity its
+                    # NUMBER cell happens to name.
+                    file_entity = (src.entity or "").strip()
                     src.currency = sel.currency
+                    src.entity = sel.entity
                     region = folder_region(sel.folder_path, params.year)
                     fr = transfer_into_master(values_wb, write_wb, src, cfg, region=region)
                     fr.currency = sel.currency
                     fr.path = sel.folder_path
+                    if file_entity and file_entity.upper() != sel.entity.upper():
+                        fr.messages.append(
+                            f"file's NUMBER cell says '{file_entity}' but the filename says "
+                            f"'{sel.entity}' — used the filename")
+                        emit(f"  NOTE {sel.entity}: NUMBER cell says {file_entity}, used filename")
                     result.files.append(fr)
                     if fr.status == "done":
                         sources.append(src)
