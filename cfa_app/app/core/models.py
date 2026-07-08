@@ -62,6 +62,7 @@ class SourceData:
     check_col: int           # 1-based
     rows: list = field(default_factory=list)  # list of (form, line, check_value), data order
     currency: str = "USD"    # from the filename; drives which period sheet the values land in
+    company: str = ""        # 'COMPANY:' name from the source (written under a new entity column)
 
 
 @dataclass

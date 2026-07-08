@@ -193,33 +193,25 @@ class RunManager:
                         result.files.append(fr)
                         emit(f"  SKIP {sel.entity} {sel.currency} — not a valid source ({sel.name})")
                         continue
-                    # The filename token is authoritative for year/period/entity/currency (that is
-                    # how select_sources chose the file). The workbook's own NUMBER/PERIOD cells are
-                    # formulas whose cached values can be stale after a copy/rename, so trust the
-                    # filename and just note any disagreement. Trusting a stale PERIOD cell here would
-                    # send the data to the wrong period sheet (base_name = P{src.month}) — or drop the
-                    # file entirely — which is why the very first entity could go missing.
-                    file_entity = (src.entity or "").strip()
+                    # Entity comes from what's written in the sheet (the source's NUMBER cell) — that
+                    # is the authoritative entity for the transfer. Period/year, however, stay pinned
+                    # to the run's selected period so the values always land in the chosen period
+                    # sheet (base_name = P{src.month}); a stale PERIOD cell must not misroute or drop
+                    # a file. Currency likewise follows the filename (how the file was grouped).
                     file_period = f"P{src.month}/{src.year}"
                     period_mismatch = (src.month != period or src.year != params.year)
                     src.currency = sel.currency
-                    src.entity = sel.entity
                     src.month = period
                     src.year = params.year
                     region = folder_region(sel.folder_path, params.year)
                     fr = transfer_into_master(values_wb, write_wb, src, cfg, region=region)
                     fr.currency = sel.currency
                     fr.path = sel.folder_path
-                    if file_entity and file_entity.upper() != sel.entity.upper():
-                        fr.messages.append(
-                            f"file's NUMBER cell says '{file_entity}' but the filename says "
-                            f"'{sel.entity}' — used the filename")
-                        emit(f"  NOTE {sel.entity}: NUMBER cell says {file_entity}, used filename")
                     if period_mismatch:
                         fr.messages.append(
-                            f"file's PERIOD cell says {file_period} but the filename says "
-                            f"P{period}/{params.year} — used the filename")
-                        emit(f"  NOTE {sel.entity}: PERIOD cell says {file_period}, used filename")
+                            f"file's PERIOD cell says {file_period} but the run is for "
+                            f"P{period}/{params.year} — used P{period}/{params.year}")
+                        emit(f"  NOTE {fr.entity}: PERIOD cell says {file_period}, used P{period}")
                     result.files.append(fr)
                     if fr.status == "done":
                         sources.append(src)

@@ -24,6 +24,7 @@ from .detection import (
     find_target_header,
     norm,
     norm_key,
+    parse_company,
     parse_entity,
     parse_period,
 )
@@ -61,6 +62,7 @@ def read_source_from_bytes(data: bytes, filename: str, cfg: DetectionConfig) -> 
 
         header_row, form_col, line_col, check_col = header
         entity = parse_entity(chosen.cell(row=2, column=1).value)
+        company = parse_company(chosen.cell(row=1, column=1).value)
         month, year = parse_period(chosen.cell(row=3, column=1).value)
         if not entity or not month:
             return None
@@ -82,7 +84,7 @@ def read_source_from_bytes(data: bytes, filename: str, cfg: DetectionConfig) -> 
         return SourceData(
             filename=filename, entity=entity, month=month, year=year or 0,
             sheet_name=chosen.title, header_row=header_row, form_col=form_col,
-            line_col=line_col, check_col=check_col, rows=rows,
+            line_col=line_col, check_col=check_col, rows=rows, company=company or "",
         )
     finally:
         wb.close()
@@ -439,6 +441,9 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         # Entity has no column yet -> add one (under its region block when known) and note it.
         entity_col = _place_new_entity_column(write_ws, wget, entity_row, w_cols, src.entity, region)
         result.entity_added = True
+        # Company name goes directly below the entity number (row 8 -> row 9 in the master).
+        if src.company:
+            write_ws.cell(row=entity_row + 1, column=entity_col).value = src.company
         msg = f"entity '{src.entity}' was not in '{result.sheet}' — added as new column {entity_col}"
         if region:
             msg += f" under region '{region}'"

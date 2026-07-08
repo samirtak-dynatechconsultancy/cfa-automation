@@ -44,6 +44,15 @@ def parse_entity(a2) -> str | None:
     return None
 
 
+def parse_company(a1) -> str | None:
+    """A1 = 'COMPANY: Solmax Geosynthetics Sdn Bhd.' -> 'Solmax Geosynthetics Sdn Bhd.'."""
+    s = norm(a1)
+    if not s:
+        return None
+    m = re.search(r"COMPANY\s*:?\s*(.+)$", s, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
 def parse_period(a3):
     """A3 = 'PERIOD: 5 / 2026' -> (5, 2026). Returns (month, year) or (None, None)."""
     s = norm(a3)
