@@ -208,7 +208,29 @@ def load_master_pair(data: bytes):
     values_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     write_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     write_wb._external_links = []      # drop external-workbook links -> self-contained, no repair
+    _drop_external_defined_names(write_wb)   # and the named ranges that pointed at them
     return values_wb, write_wb
+
+
+_EXT_REF_RE = re.compile(r"\[\d+\]")   # external-workbook reference marker, e.g. [1]Sheet!$A$1
+
+
+def _drop_external_defined_names(wb) -> None:
+    """Remove named ranges that reference an external workbook (broken once links are dropped).
+
+    Excel would otherwise report 'Removed Records: Named range' and show a repair prompt.
+    Only external references (`[n]…`) are removed; internal names and table refs are left alone.
+    """
+    for name in list(wb.defined_names.keys()):
+        if _EXT_REF_RE.search(wb.defined_names[name].value or ""):
+            del wb.defined_names[name]
+    for ws in wb.worksheets:               # also any worksheet-scoped names
+        try:
+            for name in list(ws.defined_names.keys()):
+                if _EXT_REF_RE.search(ws.defined_names[name].value or ""):
+                    del ws.defined_names[name]
+        except Exception:
+            pass
 
 
 def save_workbook_to_bytes(wb) -> bytes:
