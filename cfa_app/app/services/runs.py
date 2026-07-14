@@ -15,7 +15,9 @@ from dataclasses import dataclass
 
 from ..core.discovery import select_sources
 from ..core.engine import (
+    keep_only_periods,
     load_master_pair,
+    load_write_workbook,
     read_source_from_bytes,
     save_workbook_to_bytes,
     transfer_into_master,
@@ -49,18 +51,15 @@ class RunParams:
 
 
 def _output_stem(params: "RunParams") -> str:
-    """Build the output base name, e.g. 'CFA verification_P5_2026' or 'CFA verification_P4-P6_2026'.
+    """Build the per-YEAR output base name, e.g. 'CFA verification_2026'.
 
-    Strips any trailing period/year label already on the master name so it isn't duplicated.
+    One file per year: every period run for that year appends its sheet into the same file, so the
+    name carries only the year (any period/year label already on the master name is stripped first).
     """
     base = params.master_name[:-5] if params.master_name.lower().endswith(".xlsx") \
         else params.master_name
     base = re.sub(r"[ _-]+P\d{1,2}([ _-]+\d{4})?\s*$", "", base, flags=re.IGNORECASE).strip(" _-")
-    if params.period_from == params.period_to:
-        period_part = f"P{params.period_from}"
-    else:
-        period_part = f"P{params.period_from}-P{params.period_to}"
-    return f"{base}_{period_part}_{params.year}"
+    return f"{base}_{params.year}"
 
 
 class RunManager:
@@ -92,20 +91,15 @@ class RunManager:
         with self._lock:
             return self._runs.get(self._latest_id) if self._latest_id else None
 
-    def _unique_output_name(self, drive_id: str, folder_id: str, stem: str) -> str:
-        """'{stem}.xlsx', or '{stem}_v1.xlsx', '{stem}_v2.xlsx', … if that name already exists."""
+    def _find_output_file(self, drive_id: str, folder_id: str, name: str) -> dict | None:
+        """Return the existing output file item with this exact name (case-insensitive), or None."""
         try:
-            existing = {it["name"].lower() for it in self._graph.list_children(drive_id, folder_id)
-                        if not it["is_folder"]}
-        except Exception:  # if listing fails, fall back to the plain name
-            existing = set()
-        candidate = f"{stem}.xlsx"
-        if candidate.lower() not in existing:
-            return candidate
-        n = 1
-        while f"{stem}_v{n}.xlsx".lower() in existing:
-            n += 1
-        return f"{stem}_v{n}.xlsx"
+            for it in self._graph.list_children(drive_id, folder_id):
+                if not it["is_folder"] and (it["name"] or "").lower() == name.lower():
+                    return it
+        except Exception:      # if listing fails, treat as not-present (a fresh file is created)
+            pass
+        return None
 
     # -- worker ------------------------------------------------------------
     def _execute(self, run_id: str, params: RunParams) -> None:
@@ -126,10 +120,10 @@ class RunManager:
         stage("Getting ready…")
         emit(f"started — {params.year} P{params.period_from}-P{params.period_to}")
         try:
-            # 1. Load master (a reusable, year-agnostic template).
+            # 1. Load master (a reusable, year-agnostic template) — always the source of LABELS.
             stage("Opening the master workbook…")
             master_bytes = self._graph.download_item(params.master_drive_id, params.master_item_id)
-            values_wb, write_wb = load_master_pair(master_bytes)
+            values_wb, template_write_wb = load_master_pair(master_bytes)
             emit(f"master loaded ({len(master_bytes):,} bytes)")
             problems = validate_master(values_wb, params.year, params.period_from, params.master_name)
             if problems:
@@ -138,6 +132,23 @@ class RunManager:
                 stage("Couldn't use the master workbook.")
                 emit("ERROR: " + result.message)
                 return
+
+            # One file per YEAR: if it already exists, append this run's period(s) into it;
+            # otherwise start from the master template and strip the other periods afterwards.
+            out_name = _output_stem(params) + ".xlsx"
+            existing = self._find_output_file(
+                params.output_drive_id, params.output_folder_id, out_name)
+            write_wb = template_write_wb
+            initial = True
+            if existing:
+                try:
+                    year_bytes = self._graph.download_item(
+                        params.output_drive_id, existing["id"])
+                    write_wb = load_write_workbook(year_bytes)
+                    initial = False
+                    emit(f"appending to existing year file '{out_name}' ({len(year_bytes):,} bytes)")
+                except Exception as e:   # fall back to a fresh file from the template
+                    emit(f"could not open existing '{out_name}' ({e}); creating fresh from template")
 
             # 2. Scan the source tree ONCE, pruning branches for other years/periods.
             period_set = set(periods)
@@ -237,14 +248,17 @@ class RunManager:
                 emit("ERROR: " + result.message)
                 return
 
-            # 4. Save + upload with a period/year name (versioned on collision).
+            # 4. On a fresh year file, drop the template's other periods (keep only what we ran).
+            if initial:
+                removed = keep_only_periods(write_wb, period_set)
+                if removed:
+                    emit(f"removed template period sheet(s): {', '.join(removed)}")
+
+            # 5. Save + upload the per-year file (overwrites it in place when it already exists).
             stage("Saving the filled workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
-            stem = _output_stem(params)
-            out_name = self._unique_output_name(
-                params.output_drive_id, params.output_folder_id, stem)
             stage("Uploading the result to the output folder…")
-            emit(f"uploading '{out_name}'")
+            emit(f"uploading '{out_name}' ({'append' if not initial else 'new'})")
             uploaded = self._graph.upload_to_folder(
                 params.output_drive_id, params.output_folder_id, out_name, out_bytes)
             result.output_name = out_name

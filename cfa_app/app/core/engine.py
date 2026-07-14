@@ -361,10 +361,36 @@ def load_master_pair(data: bytes):
     which is what a point-in-time verification copy should be anyway.
     """
     values_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    return values_wb, load_write_workbook(data)
+
+
+def load_write_workbook(data: bytes):
+    """Load a self-contained WRITE workbook (data_only, external links + broken names dropped).
+
+    Used both for the master template and for reopening an existing per-year output file to append
+    another period's sheet into it.
+    """
     write_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     write_wb._external_links = []      # drop external-workbook links -> self-contained, no repair
     _drop_external_defined_names(write_wb)   # and the named ranges that pointed at them
-    return values_wb, write_wb
+    return write_wb
+
+
+def keep_only_periods(wb, keep_periods) -> list[str]:
+    """Remove period sheets (P<n> / 'P<n> <CUR>') whose number isn't in keep_periods.
+
+    Non-period sheets (e.g. Methodology) are always kept. Returns the removed sheet names. Used on
+    the first run of a year so the fresh year file carries only the period(s) actually run — not the
+    template's example periods.
+    """
+    keep = set(keep_periods)
+    removed = []
+    for name in list(wb.sheetnames):
+        m = re.match(r"^P(\d+)($|\s)", name.strip())
+        if m and int(m.group(1)) not in keep:
+            del wb[name]
+            removed.append(name)
+    return removed
 
 
 _EXT_REF_RE = re.compile(r"\[\d+\]")   # external-workbook reference marker, e.g. [1]Sheet!$A$1
@@ -449,7 +475,13 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         result.messages.append("master has no period sheet to build from -> skipped")
         return result
     if base_name not in write_wb.sheetnames:
-        _clone_sheet(write_wb, label_base, base_name)
+        # Clone the period sheet from a template that exists IN THE WRITE workbook (which, when
+        # appending to an existing year file, may no longer hold the master's template period).
+        write_tmpl = find_template_period_sheet(write_wb)
+        if write_tmpl is None:
+            result.messages.append("write workbook has no period sheet to clone from -> skipped")
+            return result
+        _clone_sheet(write_wb, write_tmpl, base_name)
 
     # Currency: USD -> base sheet; otherwise 'P{period} {CUR}', cloned from the base sheet.
     target_name = period_sheet_name(src.month, src.currency)
