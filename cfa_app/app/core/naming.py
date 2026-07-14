@@ -25,7 +25,8 @@ CURRENCIES = {"USD", "EUR", "EGP", "MYR", "GBP", "CAD", "CHF", "JPY", "CNY", "IN
 
 # Exact canonical source name: 'CFA <YYPP> Reported <entity> <CUR>' anchored end-to-end, so any
 # trailing suffix (rev / final / v2 / (2) / a date) or a missing token disqualifies the file.
-_NAME_RE = re.compile(r"^CFA\s+(\d{2})(\d{2})\s+Reported\s+(\d{3}[A-Za-z]?)\s+([A-Za-z]{3})$",
+# The entity must be DIGITS ONLY (e.g. 045, 181, 278); a lettered entity like 181L / 604P is skipped.
+_NAME_RE = re.compile(r"^CFA\s+(\d{2})(\d{2})\s+Reported\s+(\d{3})\s+([A-Za-z]{3})$",
                       re.IGNORECASE)
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
@@ -38,8 +39,9 @@ def parse_cfa_name(filename: str):
     """Return (year, period, entity, currency) for a canonically-named CFA source, else None.
 
     Accepts ONLY 'CFA <YYPP> Reported <entity> <CUR>.xls[x|m]' with nothing after the currency
-    (e.g. 'CFA 2606 Reported 045 USD.xlsx'). The currency must be a known one; any suffix, a
-    missing 'Reported', or a missing/unknown currency returns None.
+    (e.g. 'CFA 2606 Reported 045 USD.xlsx'). The entity must be digits only — a lettered entity
+    such as 181L or 604P is rejected. The currency must be a known one; any suffix, a missing
+    'Reported', or a missing/unknown currency returns None.
     """
     stem = filename.rsplit(".", 1)[0].strip()
     m = _NAME_RE.match(stem)
