@@ -257,12 +257,15 @@ class RunManager:
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")
 
             done = sum(1 for f in result.files if f.status == "done")
+            flagged = sum(f.highlighted for f in result.files)
             result.status = "done"
             result.processed = result.total
             mm = result.verify.mismatches
             result.message = (f"{done} entity file(s) transferred and "
                               f"{result.verify.checked:,} values checked — "
-                              + ("all correct." if mm == 0 else f"{mm} mismatch(es) found."))
+                              + ("all correct." if mm == 0 else f"{mm} mismatch(es) found.")
+                              + (f" {flagged} cell(s) flagged for large differences "
+                                 f"(|diff| > {cfg.diff_threshold:g})." if flagged else ""))
             stage("Done.")
             emit("DONE — " + result.message)
         except Exception as e:

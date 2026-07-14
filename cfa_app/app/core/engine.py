@@ -530,6 +530,7 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         cell.value = value
         if over:                                  # |difference| exceeds the configured threshold
             cell.fill = _DIFF_OVER_FILL
+            result.highlighted += 1
 
     # Make the entity number (row 8) a hyperlink to its source file on SharePoint.
     if src.source_url:

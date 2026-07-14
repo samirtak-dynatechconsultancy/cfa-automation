@@ -84,6 +84,7 @@ class FileResult:
     status: str = "skipped"      # "done" | "skipped" | "error"
     written: int = 0
     skipped_lines: int = 0
+    highlighted: int = 0         # cells filled light-red because |difference| exceeded the threshold
     entity_added: bool = False   # True if a new column had to be created for this entity
     messages: list = field(default_factory=list)
 
