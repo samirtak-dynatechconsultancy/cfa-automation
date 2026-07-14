@@ -1,9 +1,11 @@
 """Parse CFA source filenames and identify folders to ignore.
 
-The reported/export workbooks are named like 'CFA 2605 Reported 003 USD.xlsx' (also tolerant of
-'CFA 2505 059.xlsx'). The 'CFA <YYPP>' token is the reliable year+period source, independent of the
-(wildly inconsistent) folder names. Macro templates named 'CFA - 2025_P..' , 'CFA light', 'TFA',
-Flash/Dashboard/Financials/Notes and non-Excel files are NOT sources.
+Only the exact reporting convention is treated as a source:
+'CFA <YYPP> Reported <entity> <CUR>.xls[x|m]' (e.g. 'CFA 2606 Reported 045 USD.xlsx'). The
+'CFA <YYPP>' token gives year+period, '<entity>' the company number, '<CUR>' the currency.
+Anything else — a missing 'Reported'/currency token, or ANY extra text after the currency
+('rev', 'final', 'v2', '(2)', a date), plus macro templates ('CFA - 2025_P..', 'CFA light'),
+Flash/Dashboard/Notes and non-Excel files — is NOT a source.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ _REGION_CANON = {"HOLDING": "HOLDINGS"}
 CURRENCIES = {"USD", "EUR", "EGP", "MYR", "GBP", "CAD", "CHF", "JPY", "CNY", "INR",
               "AUD", "SGD", "HKD", "MXN", "BRL", "ZAR", "SEK", "NOK", "DKK", "PLN", "TRY", "AED"}
 
-# 'CFA' + 4-digit YYPP token (no dash => excludes 'CFA - 2025_P..').
-_CANDIDATE_RE = re.compile(r"^CFA\s+(\d{2})(\d{2})\b", re.IGNORECASE)
-_ENTITY_RE = re.compile(r"\b(\d{3}[A-Za-z]?)\b")
+# Exact canonical source name: 'CFA <YYPP> Reported <entity> <CUR>' anchored end-to-end, so any
+# trailing suffix (rev / final / v2 / (2) / a date) or a missing token disqualifies the file.
+_NAME_RE = re.compile(r"^CFA\s+(\d{2})(\d{2})\s+Reported\s+(\d{3}[A-Za-z]?)\s+([A-Za-z]{3})$",
+                      re.IGNORECASE)
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
 
@@ -32,29 +35,20 @@ def is_ignored_dir(name: str) -> bool:
 
 
 def parse_cfa_name(filename: str):
-    """Return (year, period, entity, currency) for a CFA source file, or None if not one.
+    """Return (year, period, entity, currency) for a canonically-named CFA source, else None.
 
-    currency defaults to 'USD' when the name has no currency token.
+    Accepts ONLY 'CFA <YYPP> Reported <entity> <CUR>.xls[x|m]' with nothing after the currency
+    (e.g. 'CFA 2606 Reported 045 USD.xlsx'). The currency must be a known one; any suffix, a
+    missing 'Reported', or a missing/unknown currency returns None.
     """
-    stem = filename.rsplit(".", 1)[0]
-    if "light" in stem.lower():
-        return None
-    m = _CANDIDATE_RE.match(stem)
+    stem = filename.rsplit(".", 1)[0].strip()
+    m = _NAME_RE.match(stem)
     if not m:
         return None
-    year = 2000 + int(m.group(1))
-    period = int(m.group(2))
-    rest = stem[m.end():]
-    ent = _ENTITY_RE.search(rest)
-    if not ent:
+    currency = m.group(4).upper()
+    if currency not in CURRENCIES:
         return None
-    entity = ent.group(1).upper()
-    currency = "USD"
-    for tok in re.findall(r"\b([A-Za-z]{3})\b", rest):
-        if tok.upper() in CURRENCIES:
-            currency = tok.upper()
-            break
-    return year, period, entity, currency
+    return 2000 + int(m.group(1)), int(m.group(2)), m.group(3).upper(), currency
 
 
 def parse_year_from_text(text: str):
