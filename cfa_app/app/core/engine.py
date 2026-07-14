@@ -19,6 +19,7 @@ import openpyxl
 from openpyxl.styles import PatternFill
 
 from .detection import (
+    _contains,
     find_entity_row_and_col,
     find_header_row,
     find_target_header,
@@ -67,6 +68,13 @@ def read_source_from_bytes(data: bytes, filename: str, cfg: DetectionConfig) -> 
         if not entity or not month:
             return None
 
+        # Locate the '|difference|' column in the same header row (optional).
+        diff_col = None
+        for c in range(1, min(chosen.max_column or 1, 40) + 1):
+            if _contains(chosen.cell(row=header_row, column=c).value, cfg.diff_header):
+                diff_col = c
+                break
+
         rows = []
         last_nonempty = -1
         first = header_row + 1
@@ -75,9 +83,10 @@ def read_source_from_bytes(data: bytes, filename: str, cfg: DetectionConfig) -> 
             form = norm(chosen.cell(row=r, column=form_col).value)
             line = norm(chosen.cell(row=r, column=line_col).value)
             if form is None and line is None:
-                rows.append((None, None, None))       # keep blanks as separators
+                rows.append((None, None, None, None))  # keep blanks as separators
             else:
-                rows.append((form, line, chosen.cell(row=r, column=check_col).value))
+                diff = chosen.cell(row=r, column=diff_col).value if diff_col else None
+                rows.append((form, line, chosen.cell(row=r, column=check_col).value, diff))
                 last_nonempty = idx
         rows = rows[: last_nonempty + 1]              # trim trailing empties
 
@@ -248,6 +257,33 @@ def _insert_entity_in_region(write_ws, wget, entity_row: int, scan_cols: int, re
 
 # Highlight for the heading of an entity column we added (so new entities are easy to spot).
 _NEW_ENTITY_FILL = PatternFill(fill_type="solid", fgColor="FFFF00")   # yellow
+# Light red fill for a written cell whose source |difference| exceeds the configured threshold.
+_DIFF_OVER_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")    # light red
+
+
+def _to_float(v):
+    """Best-effort numeric coercion of a source cell (handles 1.234,56 and '1,234.56'); None if N/A."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(" ", "")
+    if not s:
+        return None
+    try:
+        return float(s.replace(",", ""))     # drop thousands separators
+    except ValueError:
+        return None
+
+
+def _link_entity_cell(cell, url: str) -> None:
+    """Turn an entity-number cell into a hyperlink to its source file (kept blue + underlined)."""
+    from copy import copy
+    from openpyxl.styles import Font
+    cell.hyperlink = url
+    f = cell.font or Font()
+    cell.font = Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic,
+                     color="0563C1", underline="single")
 
 
 def _place_new_entity_column(write_ws, wget, entity_row: int, scan_cols: int,
@@ -366,13 +402,16 @@ def match_source_rows(src_rows, t_keys: dict):
     """Map each non-blank source row to a target row, order-preserving per (FORM, LINE) key.
 
     The k-th source occurrence of a key maps to the k-th target row with that key (top-to-bottom).
-    Returns a list of (form_key, line_key, check_value, target_row | None). Because the writer and
-    the verifier both call this, duplicate (FORM, LINE) lines can never be placed inconsistently.
+    Returns a list of (form_key, line_key, check_value, abs_diff, target_row | None). Because the
+    writer and verifier both call this, duplicate (FORM, LINE) lines can never be placed
+    inconsistently. Rows may be 3- or 4-tuples; a missing 4th element yields abs_diff=None.
     """
     queues = {k: sorted(rows) for k, rows in t_keys.items()}
     ptr = {k: 0 for k in queues}
     out = []
-    for form, line, chk in src_rows:
+    for row in src_rows:
+        form, line, chk = row[0], row[1], row[2]
+        diff = row[3] if len(row) > 3 else None
         if form is None and line is None:
             continue      # separator
         key = (norm_key(form), norm_key(line))
@@ -381,7 +420,7 @@ def match_source_rows(src_rows, t_keys: dict):
         if q is not None and ptr[key] < len(q):
             target = q[ptr[key]]
             ptr[key] += 1
-        out.append((key[0], key[1], chk, target))
+        out.append((key[0], key[1], chk, diff, target))
     return out
 
 
@@ -471,21 +510,30 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         last_data_row = max(r for rows in t_keys.values() for r in rows)
         _extend_not_equal_cf(write_ws, entity_col, t_first, last_data_row)
 
-    writes = []           # (target_row, value)
-    for fk, lk, chk, target in match_source_rows(src.rows, t_keys):
+    writes = []           # (target_row, value, over_threshold)
+    for fk, lk, chk, diff, target in match_source_rows(src.rows, t_keys):
         if target is None:
             result.messages.append(
                 f"line {lk!r} (form {fk!r}) not found in target -> cell skipped")
             result.skipped_lines += 1
             continue
-        writes.append((target, chk))
+        d = _to_float(diff)
+        over = d is not None and abs(d) > cfg.diff_threshold
+        writes.append((target, chk, over))
 
     if not writes:
         result.messages.append("no lines matched -> nothing written")
         return result
 
-    for row, value in writes:
-        write_ws.cell(row=row, column=entity_col).value = value
+    for row, value, over in writes:
+        cell = write_ws.cell(row=row, column=entity_col)
+        cell.value = value
+        if over:                                  # |difference| exceeds the configured threshold
+            cell.fill = _DIFF_OVER_FILL
+
+    # Make the entity number (row 8) a hyperlink to its source file on SharePoint.
+    if src.source_url:
+        _link_entity_cell(write_ws.cell(row=entity_row, column=entity_col), src.source_url)
 
     result.written = len(writes)
     result.status = "done"
@@ -539,7 +587,7 @@ def verify_output(output_bytes: bytes, master_bytes: bytes, sources: list[Source
                     continue
                 t_keys.setdefault((f, l), []).append(r)
 
-            for fk, lk, chk, target in match_source_rows(src.rows, t_keys):
+            for fk, lk, chk, diff, target in match_source_rows(src.rows, t_keys):
                 if target is None:
                     continue      # unmatched line (writer also skips these)
                 got = out_ws.cell(row=target, column=ecol).value

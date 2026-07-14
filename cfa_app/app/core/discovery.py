@@ -52,6 +52,7 @@ class Selection:
     name: str
     last_modified: str
     folder_path: str = ""
+    web_url: str = ""
 
     @property
     def full_path(self) -> str:
@@ -109,5 +110,6 @@ def select_sources(files: list[dict], year: int, period: int) -> list[Selection]
         best = max(fl, key=lambda f: version_key(f.get("name", ""), f.get("last_modified") or ""))
         out.append(Selection(entity=entity, currency=currency, item_id=best.get("id"),
                              name=best.get("name", ""), last_modified=best.get("last_modified") or "",
-                             folder_path=best.get("folder_path") or ""))
+                             folder_path=best.get("folder_path") or "",
+                             web_url=best.get("webUrl") or ""))
     return out

@@ -16,6 +16,8 @@ class DetectionConfig:
     form_header: str = "FORM"
     line_header: str = "LINE"
     check_header: str = "EQUAL TO"
+    diff_header: str = "Absolute difference"   # source column with the |difference| per line
+    diff_threshold: float = 5000.0             # |difference| above this -> highlight the written cell
     header_scan_rows: int = 20
     entity_row_scan: int = 20
     max_data_rows: int = 400
@@ -39,6 +41,11 @@ class DetectionConfig:
                     clean[int_key] = int(clean[int_key])
                 except (TypeError, ValueError):
                     del clean[int_key]
+        if "diff_threshold" in clean:                       # coerce the numeric threshold
+            try:
+                clean["diff_threshold"] = float(clean["diff_threshold"])
+            except (TypeError, ValueError):
+                del clean["diff_threshold"]
         return cls(**clean)
 
     def to_mapping(self) -> dict:
@@ -60,9 +67,10 @@ class SourceData:
     form_col: int            # 1-based
     line_col: int            # 1-based
     check_col: int           # 1-based
-    rows: list = field(default_factory=list)  # list of (form, line, check_value), data order
+    rows: list = field(default_factory=list)  # list of (form, line, check_value, abs_diff), data order
     currency: str = "USD"    # from the filename; drives which period sheet the values land in
     company: str = ""        # 'COMPANY:' name from the source (written under a new entity column)
+    source_url: str = ""     # SharePoint webUrl of the source (hyperlinked on the entity number)
 
 
 @dataclass

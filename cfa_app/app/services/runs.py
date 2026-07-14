@@ -203,6 +203,7 @@ class RunManager:
                     src.currency = sel.currency
                     src.month = period
                     src.year = params.year
+                    src.source_url = sel.web_url          # hyperlinked on the entity number cell
                     region = folder_region(sel.folder_path, params.year)
                     fr = transfer_into_master(values_wb, write_wb, src, cfg, region=region)
                     fr.currency = sel.currency
