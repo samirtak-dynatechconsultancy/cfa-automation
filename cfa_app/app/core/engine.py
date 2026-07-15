@@ -365,6 +365,36 @@ def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
         pass
 
 
+_NO_FILL = PatternFill(fill_type=None)
+
+
+def _clear_entity_data(ws, cfg: DetectionConfig) -> None:
+    """Blank the check-value cells under every entity column of a freshly-cloned period sheet.
+
+    A new period sheet is cloned from an existing one (the only structural template available), so it
+    inherits that period's data and highlight fills. Clearing the entity-column data cells (values +
+    any carried-over fill) makes the new period start empty under the entities, keeping only the
+    labels, headers, styling and conditional formatting.
+    """
+    get = _ws_getter(ws)
+    max_col = min(ws.max_column or 1, 400)
+    entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+    th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+    if entity_row is None or th is None:
+        return
+    header_row = th[0]
+    entity_cols = [c for c in range(1, max_col + 1)
+                   if _ENTITY_CELL_RE.match(str(get(entity_row, c) or "").strip())]
+    last_row = ws.max_row or header_row
+    for c in entity_cols:
+        for r in range(header_row + 1, last_row + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is not None:
+                cell.value = None
+            if cell.fill is not None and cell.fill.fill_type is not None:
+                cell.fill = _NO_FILL
+
+
 def load_master_pair(data: bytes):
     """Load the master TWICE from the same bytes, both with data_only=True.
 
@@ -529,11 +559,13 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
             result.messages.append("write workbook has no period sheet to clone from -> skipped")
             return result
         _clone_sheet(write_wb, write_tmpl, base_name)
+        _clear_entity_data(write_wb[base_name], cfg)   # new period: no inherited data under entities
 
     # Currency: USD -> base sheet; otherwise 'P{period} {CUR}', cloned from the base sheet.
     target_name = period_sheet_name(src.month, src.currency)
     if target_name not in write_wb.sheetnames:
         _clone_sheet(write_wb, base_name, target_name)
+        _clear_entity_data(write_wb[target_name], cfg)   # new currency sheet also starts blank
     result.sheet = target_name
 
     ws = values_wb[label_base]
