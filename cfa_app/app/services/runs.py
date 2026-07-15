@@ -91,15 +91,22 @@ class RunManager:
         with self._lock:
             return self._runs.get(self._latest_id) if self._latest_id else None
 
-    def _find_output_file(self, drive_id: str, folder_id: str, name: str) -> dict | None:
-        """Return the existing output file item with this exact name (case-insensitive), or None."""
+    def _latest_output_file(self, drive_id: str, folder_id: str, stem: str) -> dict | None:
+        """Most recently modified output for this year — the canonical '{stem}.xlsx' or a version
+        '{stem}_v{n}.xlsx'. That file holds the newest set of periods, so appending onto it means a
+        version created while the main file was locked is never lost from the next run.
+        """
+        pat = re.compile(rf"^{re.escape(stem)}(_v\d+)?\.xlsx$", re.IGNORECASE)
+        best = None
         try:
             for it in self._graph.list_children(drive_id, folder_id):
-                if not it["is_folder"] and (it["name"] or "").lower() == name.lower():
-                    return it
+                if it["is_folder"] or not pat.match(it["name"] or ""):
+                    continue
+                if best is None or (it.get("last_modified") or "") > (best.get("last_modified") or ""):
+                    best = it
         except Exception:      # if listing fails, treat as not-present (a fresh file is created)
-            pass
-        return None
+            return None
+        return best
 
     def _versioned_output_name(self, drive_id: str, folder_id: str, stem: str) -> str:
         """First free '{stem}_v{n}.xlsx' name — used when the main year file is locked."""
@@ -147,9 +154,10 @@ class RunManager:
 
             # One file per YEAR: if it already exists, append this run's period(s) into it;
             # otherwise start from the master template and strip the other periods afterwards.
-            out_name = _output_stem(params) + ".xlsx"
-            existing = self._find_output_file(
-                params.output_drive_id, params.output_folder_id, out_name)
+            stem = _output_stem(params)
+            out_name = stem + ".xlsx"
+            existing = self._latest_output_file(
+                params.output_drive_id, params.output_folder_id, stem)
             write_wb = template_write_wb
             initial = True
             if existing:
@@ -158,9 +166,10 @@ class RunManager:
                         params.output_drive_id, existing["id"])
                     write_wb = load_write_workbook(year_bytes)
                     initial = False
-                    emit(f"appending to existing year file '{out_name}' ({len(year_bytes):,} bytes)")
+                    emit(f"appending onto latest output '{existing['name']}' "
+                         f"({len(year_bytes):,} bytes)")
                 except Exception as e:   # fall back to a fresh file from the template
-                    emit(f"could not open existing '{out_name}' ({e}); creating fresh from template")
+                    emit(f"could not open '{existing['name']}' ({e}); creating fresh from template")
 
             # 2. Scan the source tree ONCE, pruning branches for other years/periods.
             period_set = set(periods)
@@ -279,7 +288,7 @@ class RunManager:
                 # The year file is open/locked (and stayed locked through the retries). Rather than
                 # lose the run, save it as a new version — a fresh name can't be locked.
                 target_name = self._versioned_output_name(
-                    params.output_drive_id, params.output_folder_id, _output_stem(params))
+                    params.output_drive_id, params.output_folder_id, stem)
                 emit(f"'{out_name}' is locked — saving this run as '{target_name}' instead")
                 stage("Output file was locked — saving a new version…")
                 uploaded = self._graph.upload_to_folder(
