@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ..core.discovery import select_sources
 from ..core.engine import (
+    hide_configured_rows,
     keep_only_periods,
     load_master_pair,
     load_write_workbook,
@@ -185,8 +186,7 @@ class RunManager:
                                               "out_name": out_name}
                             result.status = "awaiting"
                             result.message = (
-                                f"'{out_name}' is open or locked — someone may have it open in "
-                                f"Excel. Proceed and save this run as a new version?")
+                                f"'{out_name}' is open or locked — someone may have it open in Excel.")
                             result.stage = "The output file is locked — waiting for your choice."
                             emit("WAITING (before run): output file locked; asking whether to proceed")
                             return
@@ -299,7 +299,10 @@ class RunManager:
                 if removed:
                     emit(f"removed template period sheet(s): {', '.join(removed)}")
 
-            # 5. Save + verify (verification is independent of the upload).
+            # 5. Hide the configured detail rows on every period sheet, then save + verify.
+            hidden = hide_configured_rows(write_wb, cfg)
+            if hidden:
+                emit(f"hid {hidden} configured row(s) across the period sheet(s)")
             stage("Saving the filled workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
             stage("Double-checking every value…")
@@ -342,10 +345,9 @@ class RunManager:
                     }
                     result.status = "awaiting"
                     result.message = (
-                        f"'{out_name}' is open or locked — someone may have it open in Excel. "
-                        f"Save this run as a new version instead?")
+                        f"'{out_name}' is open or locked — someone may have it open in Excel.")
                     result.stage = "The output file is locked — waiting for your choice."
-                    emit("WAITING: output file locked; asking whether to create a new version")
+                    emit("WAITING: output file locked; asking to close it and recheck")
                     return
 
             result.output_name = target_name

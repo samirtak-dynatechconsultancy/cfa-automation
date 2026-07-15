@@ -396,6 +396,33 @@ def load_write_workbook(data: bytes):
     return write_wb
 
 
+def hide_configured_rows(write_wb, cfg) -> int:
+    """Hide the configured (FORM, LINE) rows on every period sheet. Returns the number hidden.
+
+    Matching is by normalised key, so all rows whose FORM+LINE match an entry in hidden_rows.py are
+    hidden on every 'P<n>' (and 'P<n> <CUR>') sheet.
+    """
+    from .hidden_rows import HIDE_KEYS
+    if not HIDE_KEYS:
+        return 0
+    total = 0
+    for name in write_wb.sheetnames:
+        if not re.match(r"^P\d+($|\s)", name.strip()):
+            continue
+        ws = write_wb[name]
+        get = _ws_getter(ws)
+        max_col = min(ws.max_column or 1, 200)
+        th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+        if th is None:
+            continue
+        header_row, form_col, line_col = th
+        for r in range(header_row + 1, (ws.max_row or header_row) + 1):
+            if (norm_key(get(r, form_col)), norm_key(get(r, line_col))) in HIDE_KEYS:
+                ws.row_dimensions[r].hidden = True
+                total += 1
+    return total
+
+
 def keep_only_periods(wb, keep_periods) -> list[str]:
     """Remove period sheets (P<n> / 'P<n> <CUR>') whose number isn't in keep_periods.
 

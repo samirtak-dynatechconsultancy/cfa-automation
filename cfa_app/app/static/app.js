@@ -308,14 +308,12 @@ function renderRun(r) {
       lp.classList.remove("hidden");
       lp.innerHTML =
         "<div class='lock-msg'>" + (r.message || "The output file is locked.") + "</div>" +
-        "<div class='lock-hint'>Close the file in Excel, then <strong>Recheck</strong> to save into " +
-        "the main file — or <strong>Create new version</strong> to save a separate copy.</div>" +
+        "<div class='lock-hint'>Close the file in Excel, then click <strong>Recheck</strong> " +
+        "to save your changes.</div>" +
         "<div class='lock-actions'>" +
         "<button type='button' class='primary' id='lockRecheck'>Recheck</button>" +
-        "<button type='button' id='lockYes'>Create new version</button>" +
         "<button type='button' id='lockNo'>Cancel</button></div>";
       el("lockRecheck").onclick = () => resolveLock(r.run_id, "recheck");
-      el("lockYes").onclick = () => resolveLock(r.run_id, "version");
       el("lockNo").onclick = () => resolveLock(r.run_id, "cancel");
     } else {
       lp.classList.add("hidden");
