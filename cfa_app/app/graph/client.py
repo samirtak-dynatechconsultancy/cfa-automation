@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -17,6 +18,11 @@ _UPLOAD_SIMPLE_LIMIT = 4 * 1024 * 1024   # 4 MiB: below this, PUT ...:/content w
 
 
 class GraphError(RuntimeError):
+    pass
+
+
+class GraphLockedError(GraphError):
+    """The target file is locked (open in Excel / checked out) — a 423 resourceLocked."""
     pass
 
 
@@ -247,18 +253,61 @@ class GraphClient:
 
     # -- uploads -----------------------------------------------------------
     def upload_to_folder(self, drive_id: str, parent_item_id: str, filename: str,
-                         data: bytes) -> dict:
-        """Upload bytes as a new/updated file under a parent folder item."""
-        if len(data) < _UPLOAD_SIMPLE_LIMIT:
-            url = (f"{self._base}/drives/{drive_id}/items/{parent_item_id}:/"
-                   f"{filename}:/content")
+                         data: bytes, *, retries: int = 3, backoff: float = 5.0) -> dict:
+        """Upload bytes as a new/updated file under a parent folder item.
+
+        Retries a locked/throttled target (423/429/503) with a short backoff — a brief lock (an
+        autosave, or someone who just closed the file) usually clears. A persistent 423 raises
+        GraphLockedError so the caller can report it clearly rather than crash.
+        """
+        if len(data) >= _UPLOAD_SIMPLE_LIMIT:
+            return self._upload_large(drive_id, parent_item_id, filename, data)
+        url = (f"{self._base}/drives/{drive_id}/items/{parent_item_id}:/{filename}:/content")
+        status, body = 0, ""
+        for attempt in range(retries + 1):
             with httpx.Client(timeout=120) as c:
                 r = c.put(url, headers=self._headers(
                     {"Content-Type": "application/octet-stream"}), content=data)
-            if r.status_code >= 400:
-                raise GraphError(f"upload {filename} -> {r.status_code}: {r.text[:300]}")
-            return r.json()
-        return self._upload_large(drive_id, parent_item_id, filename, data)
+            if r.status_code < 400:
+                return r.json()
+            status, body = r.status_code, r.text[:300]
+            if status in (423, 429, 503) and attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+                continue
+            break
+        if status == 423:
+            raise GraphLockedError(f"upload {filename} -> 423 locked: {body}")
+        raise GraphError(f"upload {filename} -> {status}: {body}")
+
+    def is_item_locked(self, drive_id: str, parent_item_id: str, filename: str) -> bool:
+        """Best-effort pre-flight: is the file currently write-locked (open in Excel)?
+
+        There is no Graph field that exposes an Excel co-authoring lock, and reads succeed while
+        locked, so we probe with a zero-length append upload session — creating it against a locked
+        file returns 423. Returns False if the file doesn't exist yet or the probe is inconclusive.
+        """
+        url = (f"{self._base}/drives/{drive_id}/items/{parent_item_id}:/"
+               f"{filename}:/createUploadSession")
+        try:
+            with httpx.Client(timeout=60) as c:
+                r = c.post(url, headers=self._headers({"Content-Type": "application/json"}),
+                           json={"item": {"@microsoft.graph.conflictBehavior": "replace"}})
+        except httpx.HTTPError:
+            return False
+        if r.status_code == 423:
+            return True
+        if r.status_code < 400:                       # clean up the probe session we just opened
+            try:
+                self._cancel_upload_session(r.json().get("uploadUrl"))
+            except Exception:
+                pass
+        return False
+
+    def _cancel_upload_session(self, upload_url: str | None) -> None:
+        if not upload_url:
+            return
+        with httpx.Client(timeout=30) as c:
+            c.delete(upload_url)
 
     def upload_by_path(self, drive_id: str, item_path: str, data: bytes) -> dict:
         """Upload/replace a file addressed by path (used for settings.xlsx)."""
