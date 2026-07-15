@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ..core.discovery import select_sources
 from ..core.engine import (
+    hide_configured_rows,
     keep_only_periods,
     load_master_pair,
     load_write_workbook,
@@ -298,7 +299,10 @@ class RunManager:
                 if removed:
                     emit(f"removed template period sheet(s): {', '.join(removed)}")
 
-            # 5. Save + verify (verification is independent of the upload).
+            # 5. Hide the configured detail rows on every period sheet, then save + verify.
+            hidden = hide_configured_rows(write_wb, cfg)
+            if hidden:
+                emit(f"hid {hidden} configured row(s) across the period sheet(s)")
             stage("Saving the filled workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
             stage("Double-checking every value…")
