@@ -12,6 +12,7 @@ highlight is driven by a rule already present in the template and re-fires on th
 
 from __future__ import annotations
 
+import calendar
 import io
 import re
 
@@ -303,6 +304,25 @@ def _place_new_entity_column(write_ws, wget, entity_row: int, scan_cols: int,
     return col
 
 
+def _set_period_date(write_ws, month: int, year: int) -> None:
+    """Ensure the 'PERIOD:' label in column A and refresh the period end date in column B.
+
+    The master keeps the label in A7 and a DD/MM/YYYY date in B7; each period sheet should show its
+    own period, so we write the last day of the run's month (e.g. P6/2026 -> '30/06/2026').
+    """
+    period_row = 7
+    for r in range(1, 12):                     # locate the 'PERIOD' label row (defaults to 7)
+        v = write_ws.cell(row=r, column=1).value
+        if v and "PERIOD" in str(v).upper():
+            period_row = r
+            break
+    label = write_ws.cell(row=period_row, column=1)
+    if not (label.value and str(label.value).strip()):
+        label.value = "PERIOD:"
+    last_day = calendar.monthrange(year, month)[1]
+    write_ws.cell(row=period_row, column=2).value = f"{last_day:02d}/{month:02d}/{year}"
+
+
 def period_sheet_name(period: int, currency: str) -> str:
     """USD lands on 'P{period}'; other currencies on 'P{period} {CUR}' (created on demand)."""
     base = f"P{period}"
@@ -491,6 +511,7 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
 
     ws = values_wb[label_base]
     write_ws = write_wb[target_name]
+    _set_period_date(write_ws, src.month, src.year)   # PERIOD label (A) + period end date (B)
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 
