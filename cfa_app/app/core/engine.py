@@ -382,11 +382,20 @@ def _clear_entity_data(ws, cfg: DetectionConfig) -> None:
     th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
     if entity_row is None or th is None:
         return
+    from openpyxl.styles import Font
     header_row = th[0]
     entity_cols = [c for c in range(1, max_col + 1)
                    if _ENTITY_CELL_RE.match(str(get(entity_row, c) or "").strip())]
     last_row = ws.max_row or header_row
     for c in entity_cols:
+        # Unlink the entity number: the clone carries the previous period's source hyperlink, which
+        # is wrong for the new period. Drop the link (and its blue/underlined styling); this run
+        # re-links the entities it actually processes.
+        head = ws.cell(row=entity_row, column=c)
+        if head.hyperlink is not None:
+            head.hyperlink = None
+            f = head.font or Font()
+            head.font = Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic)
         for r in range(header_row + 1, last_row + 1):
             cell = ws.cell(row=r, column=c)
             if cell.value is not None:
@@ -571,6 +580,7 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     ws = values_wb[label_base]
     write_ws = write_wb[target_name]
     _set_period_date(write_ws, src.month, src.year)   # PERIOD label (A) + period end date (B)
+    write_ws.freeze_panes = "C10"                     # freeze columns A–B and rows 1–9
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 
