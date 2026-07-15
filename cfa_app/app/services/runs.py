@@ -376,33 +376,67 @@ class RunManager:
         except Exception:  # logging must never break a run
             log.exception("run %s: run-history logging raised", result.run_id)
 
-    def resolve_locked(self, run_id: str, proceed: bool) -> RunResult | None:
-        """Complete a run that paused on a locked output file.
+    def resolve_locked(self, run_id: str, action: str) -> RunResult | None:
+        """Answer the locked-output prompt for a paused run.
 
-        proceed=True  -> save this run as a new version ('{stem}_v{n}.xlsx').
-        proceed=False -> cancel; nothing is written.
+        action 'recheck' -> re-test the lock (e.g. after closing the file); if it's now free the run
+                            continues into the canonical file, otherwise it stays paused.
+        action 'version' -> save this run as a new version ('{stem}_v{n}.xlsx').
+        action 'cancel'  -> nothing is written.
         """
         with self._lock:
             result = self._runs.get(run_id)
         if result is None or result.status != "awaiting" or not result.pending:
             return result
         p = result.pending
-        result.pending = None
-        if not proceed:
+        phase = p.get("phase")
+
+        if action == "cancel":
+            result.pending = None
             result.status = "cancelled"
             result.message = (f"Not saved — '{p['out_name']}' is locked and you chose not to "
                               f"create a new version. Close the file and run again.")
             result.stage = "Cancelled — nothing was saved."
             self._finalize(result, p["params"])
             return result
-        if p.get("phase") == "pre_run":
-            # Agreed BEFORE the work: run it now, auto-saving a version if the file is still locked.
+
+        if action == "recheck":
+            if phase == "pre_run":
+                # Re-run from the top: the probe re-tests the lock. If free now, it goes to the
+                # canonical file; if still locked, it pauses again with the same prompt.
+                result.pending = None
+                result.status = "running"
+                result.stage = "Re-checking the output file…"
+                threading.Thread(target=self._execute, args=(run_id, p["params"]),
+                                 daemon=True).start()
+                return result
+            # post_run: the bytes are ready — just retry writing the canonical file.
+            result.stage = "Re-checking the output file…"
+            try:
+                uploaded = self._graph.upload_to_folder(
+                    p["drive_id"], p["folder_id"], p["out_name"], p["bytes"], retries=0)
+            except GraphLockedError:
+                result.stage = "Still open/locked — waiting for your choice."
+                return result                              # keep the pending state + prompt
+            result.pending = None
+            result.output_name = p["out_name"]
+            result.output_url = uploaded.get("webUrl")
+            result.status = "done"
+            result.message = p["base_message"]
+            result.stage = "Done."
+            self._finalize(result, p["params"])
+            return result
+
+        # action == 'version'
+        result.pending = None
+        if phase == "pre_run":
+            # Agreed to a version before the work: run it now, saving a version if still locked.
             result.status = "running"
             result.stage = "Getting ready…"
             threading.Thread(target=self._execute, args=(run_id, p["params"]),
                              kwargs={"auto_version": True, "skip_probe": True}, daemon=True).start()
             return result
-        # phase == 'post_run': the bytes are already produced — save them as a new version now.
+        # post_run version: the bytes are already produced — save them as a new version now.
         target = self._versioned_output_name(p["drive_id"], p["folder_id"], p["stem"])
         result.stage = "Saving a new version…"
         try:

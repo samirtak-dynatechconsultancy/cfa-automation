@@ -38,13 +38,15 @@ def start_run(body: StartRun):
 
 
 class ResolveLock(BaseModel):
-    proceed: bool
+    action: str          # "recheck" | "version" | "cancel"
 
 
 @router.post("/{run_id}/resolve-lock")
 def resolve_lock(run_id: str, body: ResolveLock):
-    """Answer the 'output file is locked — save as a new version?' prompt for a paused run."""
-    result = get_run_manager().resolve_locked(run_id, body.proceed)
+    """Answer the locked-output prompt for a paused run: recheck the lock, save a new version, or cancel."""
+    if body.action not in ("recheck", "version", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be recheck, version or cancel")
+    result = get_run_manager().resolve_locked(run_id, body.action)
     if result is None:
         raise HTTPException(status_code=404, detail="run not found or not awaiting a decision")
     return result.as_dict()

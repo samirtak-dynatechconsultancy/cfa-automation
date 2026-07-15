@@ -63,7 +63,8 @@ td.notes { color: var(--muted); font-size: .85rem; }
 
 .lockprompt { margin: 10px 0; padding: 12px 14px; background: #fff4e5;
   border: 1px solid #ffd9a8; border-radius: 8px; color: #8a5000; }
-.lockprompt .lock-msg { margin-bottom: 10px; }
+.lockprompt .lock-msg { margin-bottom: 6px; }
+.lockprompt .lock-hint { margin-bottom: 10px; font-size: .85rem; opacity: .85; }
 .lockprompt .lock-actions { display: flex; gap: 8px; }
 .progress-wrap { height: 8px; background: #e5eaf1; border-radius: 6px; overflow: hidden;
   margin: 12px 0 4px; }

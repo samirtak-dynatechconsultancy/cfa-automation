@@ -254,19 +254,19 @@ async function pollRun(runId) {
   }
 }
 
-async function resolveLock(runId, proceed) {
+async function resolveLock(runId, action) {
   const lp = el("lockPrompt");
-  if (lp) lp.innerHTML = "<div class='muted'>" +
-    (proceed ? "Saving a new version…" : "Cancelling…") + "</div>";
+  const busy = { recheck: "Re-checking…", version: "Saving a new version…", cancel: "Cancelling…" };
+  if (lp) lp.innerHTML = "<div class='muted'>" + (busy[action] || "Working…") + "</div>";
   try {
     const r = await api("/api/runs/" + runId + "/resolve-lock", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proceed }),
+      body: JSON.stringify({ action }),
     });
     renderRun(r);
     if (r.status === "running" || r.status === "queued") {
-      el("runBtn").disabled = true;     // 'proceed' before the run -> it executes now; follow it
+      el("runBtn").disabled = true;     // it's executing now (proceed/recheck-freed); follow it
       pollRun(runId);
     } else {
       el("runBtn").disabled = false;
@@ -308,11 +308,15 @@ function renderRun(r) {
       lp.classList.remove("hidden");
       lp.innerHTML =
         "<div class='lock-msg'>" + (r.message || "The output file is locked.") + "</div>" +
+        "<div class='lock-hint'>Close the file in Excel, then <strong>Recheck</strong> to save into " +
+        "the main file — or <strong>Create new version</strong> to save a separate copy.</div>" +
         "<div class='lock-actions'>" +
-        "<button type='button' class='primary' id='lockYes'>Create new version</button>" +
+        "<button type='button' class='primary' id='lockRecheck'>Recheck</button>" +
+        "<button type='button' id='lockYes'>Create new version</button>" +
         "<button type='button' id='lockNo'>Cancel</button></div>";
-      el("lockYes").onclick = () => resolveLock(r.run_id, true);
-      el("lockNo").onclick = () => resolveLock(r.run_id, false);
+      el("lockRecheck").onclick = () => resolveLock(r.run_id, "recheck");
+      el("lockYes").onclick = () => resolveLock(r.run_id, "version");
+      el("lockNo").onclick = () => resolveLock(r.run_id, "cancel");
     } else {
       lp.classList.add("hidden");
       lp.innerHTML = "";
