@@ -121,10 +121,12 @@ class RunManager:
         return f"{stem}_v{n}.xlsx"
 
     # -- worker ------------------------------------------------------------
-    def _execute(self, run_id: str, params: RunParams) -> None:
+    def _execute(self, run_id: str, params: RunParams, *,
+                 auto_version: bool = False, skip_probe: bool = False) -> None:
         result = self._runs[run_id]
         result.status = "running"
-        result.started_at = _dt.datetime.now().isoformat(timespec="seconds")
+        if not result.started_at:
+            result.started_at = _dt.datetime.now().isoformat(timespec="seconds")
         cfg: DetectionConfig = self._store.detection_config()
         periods = list(range(params.period_from, params.period_to + 1))
 
@@ -164,12 +166,34 @@ class RunManager:
                 try:
                     year_bytes = self._graph.download_item(
                         params.output_drive_id, existing["id"])
+                except Exception as e:   # fall back to a fresh file from the template
+                    emit(f"could not open '{existing['name']}' ({e}); creating fresh from template")
+                    year_bytes = None
+                if year_bytes is not None:
+                    # UPFRONT lock check: test-write the year file BEFORE the long scan/transfer, so a
+                    # file that's open in Excel is caught immediately (SharePoint can't report an Excel
+                    # lock without a write). retries=0 = quick check. If locked, ask before any work.
+                    if not skip_probe:
+                        stage("Checking the output file is available…")
+                        emit(f"checking whether '{out_name}' can be written")
+                        try:
+                            self._graph.upload_to_folder(
+                                params.output_drive_id, params.output_folder_id,
+                                out_name, year_bytes, retries=0)
+                        except GraphLockedError:
+                            result.pending = {"phase": "pre_run", "params": params,
+                                              "out_name": out_name}
+                            result.status = "awaiting"
+                            result.message = (
+                                f"'{out_name}' is open or locked — someone may have it open in "
+                                f"Excel. Proceed and save this run as a new version?")
+                            result.stage = "The output file is locked — waiting for your choice."
+                            emit("WAITING (before run): output file locked; asking whether to proceed")
+                            return
                     write_wb = load_write_workbook(year_bytes)
                     initial = False
                     emit(f"appending onto latest output '{existing['name']}' "
                          f"({len(year_bytes):,} bytes)")
-                except Exception as e:   # fall back to a fresh file from the template
-                    emit(f"could not open '{existing['name']}' ({e}); creating fresh from template")
 
             # 2. Scan the source tree ONCE, pruning branches for other years/periods.
             period_set = set(periods)
@@ -296,27 +320,41 @@ class RunManager:
             # ask the user whether to save this run as a new version instead of losing it.
             stage("Uploading the result to the output folder…")
             emit(f"uploading '{out_name}' ({'append' if not initial else 'new'})")
+            target_name = out_name
             try:
                 uploaded = self._graph.upload_to_folder(
                     params.output_drive_id, params.output_folder_id, out_name, out_bytes)
             except GraphLockedError:
-                result.pending = {
-                    "bytes": out_bytes, "stem": stem, "out_name": out_name,
-                    "drive_id": params.output_drive_id, "folder_id": params.output_folder_id,
-                    "params": params, "base_message": base_message,
-                }
-                result.status = "awaiting"
-                result.message = (
-                    f"'{out_name}' is open or locked — someone may have it open in Excel. "
-                    f"Save this run as a new version instead?")
-                result.stage = "The output file is locked — waiting for your choice."
-                emit("WAITING: output file locked; asking whether to create a new version")
-                return
+                if auto_version:
+                    # User already agreed up front to a new version — save it without re-asking.
+                    target_name = self._versioned_output_name(
+                        params.output_drive_id, params.output_folder_id, stem)
+                    emit(f"'{out_name}' still locked — saving new version '{target_name}'")
+                    stage("Saving a new version…")
+                    uploaded = self._graph.upload_to_folder(
+                        params.output_drive_id, params.output_folder_id, target_name, out_bytes)
+                else:
+                    # Locked between the pre-flight check and now (rare) — ask before versioning.
+                    result.pending = {
+                        "phase": "post_run", "bytes": out_bytes, "stem": stem, "out_name": out_name,
+                        "drive_id": params.output_drive_id, "folder_id": params.output_folder_id,
+                        "params": params, "base_message": base_message,
+                    }
+                    result.status = "awaiting"
+                    result.message = (
+                        f"'{out_name}' is open or locked — someone may have it open in Excel. "
+                        f"Save this run as a new version instead?")
+                    result.stage = "The output file is locked — waiting for your choice."
+                    emit("WAITING: output file locked; asking whether to create a new version")
+                    return
 
-            result.output_name = out_name
+            result.output_name = target_name
             result.output_url = uploaded.get("webUrl")
             result.status = "done"
             result.message = base_message
+            if target_name != out_name:
+                result.message += (f" '{out_name}' was locked, so this run was saved as "
+                                   f"'{target_name}'.")
             stage("Done.")
             emit("DONE — " + result.message)
         except Exception as e:
@@ -357,6 +395,14 @@ class RunManager:
             result.stage = "Cancelled — nothing was saved."
             self._finalize(result, p["params"])
             return result
+        if p.get("phase") == "pre_run":
+            # Agreed BEFORE the work: run it now, auto-saving a version if the file is still locked.
+            result.status = "running"
+            result.stage = "Getting ready…"
+            threading.Thread(target=self._execute, args=(run_id, p["params"]),
+                             kwargs={"auto_version": True, "skip_probe": True}, daemon=True).start()
+            return result
+        # phase == 'post_run': the bytes are already produced — save them as a new version now.
         target = self._versioned_output_name(p["drive_id"], p["folder_id"], p["stem"])
         result.stage = "Saving a new version…"
         try:

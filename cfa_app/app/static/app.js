@@ -265,9 +265,14 @@ async function resolveLock(runId, proceed) {
       body: JSON.stringify({ proceed }),
     });
     renderRun(r);
+    if (r.status === "running" || r.status === "queued") {
+      el("runBtn").disabled = true;     // 'proceed' before the run -> it executes now; follow it
+      pollRun(runId);
+    } else {
+      el("runBtn").disabled = false;
+    }
   } catch (e) {
     if (lp) lp.innerHTML = "<div class='lock-msg'>Error: " + e.message + "</div>";
-  } finally {
     el("runBtn").disabled = false;
   }
 }
