@@ -101,6 +101,18 @@ class RunManager:
             pass
         return None
 
+    def _versioned_output_name(self, drive_id: str, folder_id: str, stem: str) -> str:
+        """First free '{stem}_v{n}.xlsx' name — used when the main year file is locked."""
+        try:
+            existing = {it["name"].lower() for it in self._graph.list_children(drive_id, folder_id)
+                        if not it["is_folder"]}
+        except Exception:
+            existing = set()
+        n = 1
+        while f"{stem}_v{n}.xlsx".lower() in existing:
+            n += 1
+        return f"{stem}_v{n}.xlsx"
+
     # -- worker ------------------------------------------------------------
     def _execute(self, run_id: str, params: RunParams) -> None:
         result = self._runs[run_id]
@@ -141,17 +153,6 @@ class RunManager:
             write_wb = template_write_wb
             initial = True
             if existing:
-                # Fail fast if the year file is already open/locked — before the long scan/transfer.
-                stage("Checking the output file is available…")
-                if self._graph.is_item_locked(
-                        params.output_drive_id, params.output_folder_id, out_name):
-                    result.status = "error"
-                    result.message = (
-                        f"'{out_name}' is open or locked — someone may have it open in Excel. "
-                        f"Please close it and run again.")
-                    result.stage = "The output file is open/locked — close it and re-run."
-                    emit("ERROR: output file locked before start: " + out_name)
-                    return
                 try:
                     year_bytes = self._graph.download_item(
                         params.output_drive_id, existing["id"])
@@ -270,19 +271,20 @@ class RunManager:
             out_bytes = save_workbook_to_bytes(write_wb)
             stage("Uploading the result to the output folder…")
             emit(f"uploading '{out_name}' ({'append' if not initial else 'new'})")
+            target_name = out_name
             try:
                 uploaded = self._graph.upload_to_folder(
                     params.output_drive_id, params.output_folder_id, out_name, out_bytes)
             except GraphLockedError:
-                # Someone opened the file during the run (after the pre-flight check passed).
-                result.status = "error"
-                result.message = (
-                    f"Couldn't save '{out_name}' — it's now open or locked (someone may have opened "
-                    f"it in Excel during the run). Please close it and run again.")
-                result.stage = "The output file got locked — close it and re-run."
-                emit("ERROR: output file locked at upload: " + out_name)
-                return
-            result.output_name = out_name
+                # The year file is open/locked (and stayed locked through the retries). Rather than
+                # lose the run, save it as a new version — a fresh name can't be locked.
+                target_name = self._versioned_output_name(
+                    params.output_drive_id, params.output_folder_id, _output_stem(params))
+                emit(f"'{out_name}' is locked — saving this run as '{target_name}' instead")
+                stage("Output file was locked — saving a new version…")
+                uploaded = self._graph.upload_to_folder(
+                    params.output_drive_id, params.output_folder_id, target_name, out_bytes)
+            result.output_name = target_name
             result.output_url = uploaded.get("webUrl")
             emit(f"uploaded ({len(out_bytes):,} bytes)")
 
@@ -301,6 +303,9 @@ class RunManager:
                               + ("all correct." if mm == 0 else f"{mm} mismatch(es) found.")
                               + (f" {flagged} cell(s) flagged for large differences "
                                  f"(|diff| > {cfg.diff_threshold:g})." if flagged else ""))
+            if result.output_name != out_name:
+                result.message += (f" NOTE: '{out_name}' was open/locked, so this run was saved "
+                                   f"as '{result.output_name}' instead.")
             stage("Done.")
             emit("DONE — " + result.message)
         except Exception as e:

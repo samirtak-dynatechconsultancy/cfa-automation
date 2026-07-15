@@ -279,36 +279,6 @@ class GraphClient:
             raise GraphLockedError(f"upload {filename} -> 423 locked: {body}")
         raise GraphError(f"upload {filename} -> {status}: {body}")
 
-    def is_item_locked(self, drive_id: str, parent_item_id: str, filename: str) -> bool:
-        """Best-effort pre-flight: is the file currently write-locked (open in Excel)?
-
-        There is no Graph field that exposes an Excel co-authoring lock, and reads succeed while
-        locked, so we probe with a zero-length append upload session — creating it against a locked
-        file returns 423. Returns False if the file doesn't exist yet or the probe is inconclusive.
-        """
-        url = (f"{self._base}/drives/{drive_id}/items/{parent_item_id}:/"
-               f"{filename}:/createUploadSession")
-        try:
-            with httpx.Client(timeout=60) as c:
-                r = c.post(url, headers=self._headers({"Content-Type": "application/json"}),
-                           json={"item": {"@microsoft.graph.conflictBehavior": "replace"}})
-        except httpx.HTTPError:
-            return False
-        if r.status_code == 423:
-            return True
-        if r.status_code < 400:                       # clean up the probe session we just opened
-            try:
-                self._cancel_upload_session(r.json().get("uploadUrl"))
-            except Exception:
-                pass
-        return False
-
-    def _cancel_upload_session(self, upload_url: str | None) -> None:
-        if not upload_url:
-            return
-        with httpx.Client(timeout=30) as c:
-            c.delete(upload_url)
-
     def upload_by_path(self, drive_id: str, item_path: str, data: bytes) -> dict:
         """Upload/replace a file addressed by path (used for settings.xlsx)."""
         path = item_path.strip("/")
