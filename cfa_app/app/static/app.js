@@ -240,6 +240,8 @@ async function pollRun(runId) {
     renderRun(r);
     if (r.status === "queued" || r.status === "running") {
       setTimeout(() => pollRun(runId), 1500);
+    } else if (r.status === "awaiting") {
+      el("runBtn").disabled = true;        // paused for the lock decision; keep Start disabled
     } else {
       el("runBtn").disabled = false;
     }
@@ -252,6 +254,24 @@ async function pollRun(runId) {
   }
 }
 
+async function resolveLock(runId, proceed) {
+  const lp = el("lockPrompt");
+  if (lp) lp.innerHTML = "<div class='muted'>" +
+    (proceed ? "Saving a new version…" : "Cancelling…") + "</div>";
+  try {
+    const r = await api("/api/runs/" + runId + "/resolve-lock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proceed }),
+    });
+    renderRun(r);
+  } catch (e) {
+    if (lp) lp.innerHTML = "<div class='lock-msg'>Error: " + e.message + "</div>";
+  } finally {
+    el("runBtn").disabled = false;
+  }
+}
+
 function renderRun(r) {
   const running = (r.status === "queued" || r.status === "running");
 
@@ -260,6 +280,7 @@ function renderRun(r) {
   const sp = el("spinner");
   if (running) { sp.className = "spinner spin"; sp.textContent = ""; }
   else if (r.status === "done") { sp.className = "spinner ok"; sp.textContent = "✓"; }
+  else if (r.status === "awaiting") { sp.className = "spinner warn"; sp.textContent = "!"; }
   else { sp.className = "spinner bad"; sp.textContent = "✕"; }
 
   // Progress bar (X of Y) once the total is known.
@@ -272,8 +293,26 @@ function renderRun(r) {
     pw.classList.add("hidden");
   }
 
-  // One-line summary once finished.
-  el("runMessage").textContent = running ? "" : (r.message || "");
+  // One-line summary once finished (the lock prompt shows its own message while awaiting).
+  el("runMessage").textContent = (running || r.status === "awaiting") ? "" : (r.message || "");
+
+  // Locked-file prompt: ask whether to save this run as a new version.
+  const lp = el("lockPrompt");
+  if (lp) {
+    if (r.status === "awaiting") {
+      lp.classList.remove("hidden");
+      lp.innerHTML =
+        "<div class='lock-msg'>" + (r.message || "The output file is locked.") + "</div>" +
+        "<div class='lock-actions'>" +
+        "<button type='button' class='primary' id='lockYes'>Create new version</button>" +
+        "<button type='button' id='lockNo'>Cancel</button></div>";
+      el("lockYes").onclick = () => resolveLock(r.run_id, true);
+      el("lockNo").onclick = () => resolveLock(r.run_id, false);
+    } else {
+      lp.classList.add("hidden");
+      lp.innerHTML = "";
+    }
+  }
 
   // Notices (e.g. entity columns that had to be added).
   const noticeEl = el("noticeBox");
@@ -440,6 +479,8 @@ function attachRun(id, r) {
   if (r.status === "queued" || r.status === "running") {
     el("runBtn").disabled = true;
     pollRun(id);                                            // keep following it live
+  } else if (r.status === "awaiting") {
+    el("runBtn").disabled = true;                          // still waiting on the lock decision
   }
 }
 
@@ -462,7 +503,8 @@ async function resumeRun() {
   //    ask the server for the most recent run and re-attach if it's still in progress.
   try {
     const r = await api("/api/runs/latest");
-    if (r && r.run_id && (r.status === "running" || r.status === "queued")) {
+    if (r && r.run_id &&
+        (r.status === "running" || r.status === "queued" || r.status === "awaiting")) {
       attachRun(r.run_id, r);
     }
   } catch (e) {}

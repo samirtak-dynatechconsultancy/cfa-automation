@@ -26,7 +26,7 @@ from ..core.engine import (
 )
 from ..core.models import DetectionConfig, FileResult, RunResult
 from ..core.naming import folder_period, folder_region, folder_year
-from ..graph.client import GraphClient, GraphLockedError
+from ..graph.client import GraphClient, GraphError, GraphLockedError
 from ..logging_config import get_logger
 from .run_log import RunLogStore
 from .settings_store import SettingsStore
@@ -275,46 +275,48 @@ class RunManager:
                 if removed:
                     emit(f"removed template period sheet(s): {', '.join(removed)}")
 
-            # 5. Save + upload the per-year file (overwrites it in place when it already exists).
+            # 5. Save + verify (verification is independent of the upload).
             stage("Saving the filled workbook…")
             out_bytes = save_workbook_to_bytes(write_wb)
-            stage("Uploading the result to the output folder…")
-            emit(f"uploading '{out_name}' ({'append' if not initial else 'new'})")
-            target_name = out_name
-            try:
-                uploaded = self._graph.upload_to_folder(
-                    params.output_drive_id, params.output_folder_id, out_name, out_bytes)
-            except GraphLockedError:
-                # The year file is open/locked (and stayed locked through the retries). Rather than
-                # lose the run, save it as a new version — a fresh name can't be locked.
-                target_name = self._versioned_output_name(
-                    params.output_drive_id, params.output_folder_id, stem)
-                emit(f"'{out_name}' is locked — saving this run as '{target_name}' instead")
-                stage("Output file was locked — saving a new version…")
-                uploaded = self._graph.upload_to_folder(
-                    params.output_drive_id, params.output_folder_id, target_name, out_bytes)
-            result.output_name = target_name
-            result.output_url = uploaded.get("webUrl")
-            emit(f"uploaded ({len(out_bytes):,} bytes)")
-
-            # Independent verification of the saved copy.
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")
 
             done = sum(1 for f in result.files if f.status == "done")
             flagged = sum(f.highlighted for f in result.files)
-            result.status = "done"
-            result.processed = result.total
             mm = result.verify.mismatches
-            result.message = (f"{done} entity file(s) transferred and "
-                              f"{result.verify.checked:,} values checked — "
-                              + ("all correct." if mm == 0 else f"{mm} mismatch(es) found.")
-                              + (f" {flagged} cell(s) flagged for large differences "
-                                 f"(|diff| > {cfg.diff_threshold:g})." if flagged else ""))
-            if result.output_name != out_name:
-                result.message += (f" NOTE: '{out_name}' was open/locked, so this run was saved "
-                                   f"as '{result.output_name}' instead.")
+            base_message = (f"{done} entity file(s) transferred and "
+                            f"{result.verify.checked:,} values checked — "
+                            + ("all correct." if mm == 0 else f"{mm} mismatch(es) found.")
+                            + (f" {flagged} cell(s) flagged for large differences "
+                               f"(|diff| > {cfg.diff_threshold:g})." if flagged else ""))
+            result.processed = result.total
+
+            # 6. Upload (overwrites the year file). If it's locked even after the retries, PAUSE and
+            # ask the user whether to save this run as a new version instead of losing it.
+            stage("Uploading the result to the output folder…")
+            emit(f"uploading '{out_name}' ({'append' if not initial else 'new'})")
+            try:
+                uploaded = self._graph.upload_to_folder(
+                    params.output_drive_id, params.output_folder_id, out_name, out_bytes)
+            except GraphLockedError:
+                result.pending = {
+                    "bytes": out_bytes, "stem": stem, "out_name": out_name,
+                    "drive_id": params.output_drive_id, "folder_id": params.output_folder_id,
+                    "params": params, "base_message": base_message,
+                }
+                result.status = "awaiting"
+                result.message = (
+                    f"'{out_name}' is open or locked — someone may have it open in Excel. "
+                    f"Save this run as a new version instead?")
+                result.stage = "The output file is locked — waiting for your choice."
+                emit("WAITING: output file locked; asking whether to create a new version")
+                return
+
+            result.output_name = out_name
+            result.output_url = uploaded.get("webUrl")
+            result.status = "done"
+            result.message = base_message
             stage("Done.")
             emit("DONE — " + result.message)
         except Exception as e:
@@ -325,8 +327,52 @@ class RunManager:
             result.logs.append(f"{ts}  FAILED: {result.message}")
             log.exception("run %s FAILED", run_id)
         finally:
-            result.finished_at = _dt.datetime.now().isoformat(timespec="seconds")
-            try:
-                self._run_log.log_run(result, params)
-            except Exception:  # logging must never break a run
-                log.exception("run %s: run-history logging raised", run_id)
+            if result.status != "awaiting":     # a paused run is finalised when the user resolves it
+                self._finalize(result, params)
+
+    def _finalize(self, result: RunResult, params: "RunParams") -> None:
+        """Stamp the finish time and log the run to history (once, when it reaches a terminal state)."""
+        result.finished_at = _dt.datetime.now().isoformat(timespec="seconds")
+        try:
+            self._run_log.log_run(result, params)
+        except Exception:  # logging must never break a run
+            log.exception("run %s: run-history logging raised", result.run_id)
+
+    def resolve_locked(self, run_id: str, proceed: bool) -> RunResult | None:
+        """Complete a run that paused on a locked output file.
+
+        proceed=True  -> save this run as a new version ('{stem}_v{n}.xlsx').
+        proceed=False -> cancel; nothing is written.
+        """
+        with self._lock:
+            result = self._runs.get(run_id)
+        if result is None or result.status != "awaiting" or not result.pending:
+            return result
+        p = result.pending
+        result.pending = None
+        if not proceed:
+            result.status = "cancelled"
+            result.message = (f"Not saved — '{p['out_name']}' is locked and you chose not to "
+                              f"create a new version. Close the file and run again.")
+            result.stage = "Cancelled — nothing was saved."
+            self._finalize(result, p["params"])
+            return result
+        target = self._versioned_output_name(p["drive_id"], p["folder_id"], p["stem"])
+        result.stage = "Saving a new version…"
+        try:
+            uploaded = self._graph.upload_to_folder(
+                p["drive_id"], p["folder_id"], target, p["bytes"])
+        except GraphError as e:
+            result.status = "error"
+            result.message = f"Could not save a new version: {e}"
+            result.stage = "Something went wrong saving the new version."
+            self._finalize(result, p["params"])
+            return result
+        result.output_name = target
+        result.output_url = uploaded.get("webUrl")
+        result.status = "done"
+        result.message = (p["base_message"] + f" '{p['out_name']}' was locked, so this run was "
+                          f"saved as a new version '{target}'.")
+        result.stage = "Done."
+        self._finalize(result, p["params"])
+        return result
