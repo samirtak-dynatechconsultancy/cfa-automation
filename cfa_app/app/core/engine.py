@@ -12,6 +12,7 @@ highlight is driven by a rule already present in the template and re-fires on th
 
 from __future__ import annotations
 
+import calendar
 import io
 import re
 
@@ -303,6 +304,25 @@ def _place_new_entity_column(write_ws, wget, entity_row: int, scan_cols: int,
     return col
 
 
+def _set_period_date(write_ws, month: int, year: int) -> None:
+    """Ensure the 'PERIOD:' label in column A and refresh the period end date in column B.
+
+    The master keeps the label in A7 and a DD/MM/YYYY date in B7; each period sheet should show its
+    own period, so we write the last day of the run's month (e.g. P6/2026 -> '30/06/2026').
+    """
+    period_row = 7
+    for r in range(1, 12):                     # locate the 'PERIOD' label row (defaults to 7)
+        v = write_ws.cell(row=r, column=1).value
+        if v and "PERIOD" in str(v).upper():
+            period_row = r
+            break
+    label = write_ws.cell(row=period_row, column=1)
+    if not (label.value and str(label.value).strip()):
+        label.value = "PERIOD:"
+    last_day = calendar.monthrange(year, month)[1]
+    write_ws.cell(row=period_row, column=2).value = f"{last_day:02d}/{month:02d}/{year}"
+
+
 def period_sheet_name(period: int, currency: str) -> str:
     """USD lands on 'P{period}'; other currencies on 'P{period} {CUR}' (created on demand)."""
     base = f"P{period}"
@@ -331,18 +351,66 @@ def validate_master(values_wb, year: int, period: int, master_name: str) -> list
 
 
 def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
-    """Duplicate a sheet (period or currency), best-effort copying conditional formats."""
+    """Duplicate a sheet (period or currency), best-effort copying conditional formats.
+
+    A new period/currency sheet starts WITHOUT the source sheet's comments/notes: copy_worksheet
+    carries them over, but a freshly created period should be blank of annotations (this run only
+    fills data). Existing period sheets are never cloned, so their user notes are preserved.
+    """
     if target_name in write_wb.sheetnames:
         return
     src_ws = write_wb[src_name]
     new_ws = write_wb.copy_worksheet(src_ws)      # copies values, styles, dimensions, merges
     new_ws.title = target_name
+    for row in new_ws.iter_rows():                # drop carried-over comments/notes
+        for cell in row:
+            if cell.comment is not None:
+                cell.comment = None
     try:  # copy_worksheet does NOT carry conditional formatting; re-add the rules
         for cf in src_ws.conditional_formatting:
             for rule in cf.rules:
                 new_ws.conditional_formatting.add(str(cf.sqref), rule)
     except Exception:  # best-effort; a cloned sheet without CF still holds correct values
         pass
+
+
+_NO_FILL = PatternFill(fill_type=None)
+
+
+def _clear_entity_data(ws, cfg: DetectionConfig) -> None:
+    """Blank the check-value cells under every entity column of a freshly-cloned period sheet.
+
+    A new period sheet is cloned from an existing one (the only structural template available), so it
+    inherits that period's data and highlight fills. Clearing the entity-column data cells (values +
+    any carried-over fill) makes the new period start empty under the entities, keeping only the
+    labels, headers, styling and conditional formatting.
+    """
+    get = _ws_getter(ws)
+    max_col = min(ws.max_column or 1, 400)
+    entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+    th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+    if entity_row is None or th is None:
+        return
+    from openpyxl.styles import Font
+    header_row = th[0]
+    entity_cols = [c for c in range(1, max_col + 1)
+                   if _ENTITY_CELL_RE.match(str(get(entity_row, c) or "").strip())]
+    last_row = ws.max_row or header_row
+    for c in entity_cols:
+        # Unlink the entity number: the clone carries the previous period's source hyperlink, which
+        # is wrong for the new period. Drop the link (and its blue/underlined styling); this run
+        # re-links the entities it actually processes.
+        head = ws.cell(row=entity_row, column=c)
+        if head.hyperlink is not None:
+            head.hyperlink = None
+            f = head.font or Font()
+            head.font = Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic)
+        for r in range(header_row + 1, last_row + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is not None:
+                cell.value = None
+            if cell.fill is not None and cell.fill.fill_type is not None:
+                cell.fill = _NO_FILL
 
 
 def load_master_pair(data: bytes):
@@ -361,10 +429,63 @@ def load_master_pair(data: bytes):
     which is what a point-in-time verification copy should be anyway.
     """
     values_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    return values_wb, load_write_workbook(data)
+
+
+def load_write_workbook(data: bytes):
+    """Load a self-contained WRITE workbook (data_only, external links + broken names dropped).
+
+    Used both for the master template and for reopening an existing per-year output file to append
+    another period's sheet into it.
+    """
     write_wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     write_wb._external_links = []      # drop external-workbook links -> self-contained, no repair
     _drop_external_defined_names(write_wb)   # and the named ranges that pointed at them
-    return values_wb, write_wb
+    return write_wb
+
+
+def hide_configured_rows(write_wb, cfg) -> int:
+    """Hide the configured (FORM, LINE) rows on every period sheet. Returns the number hidden.
+
+    Matching is by normalised key, so all rows whose FORM+LINE match an entry in hidden_rows.py are
+    hidden on every 'P<n>' (and 'P<n> <CUR>') sheet.
+    """
+    from .hidden_rows import HIDE_KEYS
+    if not HIDE_KEYS:
+        return 0
+    total = 0
+    for name in write_wb.sheetnames:
+        if not re.match(r"^P\d+($|\s)", name.strip()):
+            continue
+        ws = write_wb[name]
+        get = _ws_getter(ws)
+        max_col = min(ws.max_column or 1, 200)
+        th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+        if th is None:
+            continue
+        header_row, form_col, line_col = th
+        for r in range(header_row + 1, (ws.max_row or header_row) + 1):
+            if (norm_key(get(r, form_col)), norm_key(get(r, line_col))) in HIDE_KEYS:
+                ws.row_dimensions[r].hidden = True
+                total += 1
+    return total
+
+
+def keep_only_periods(wb, keep_periods) -> list[str]:
+    """Remove period sheets (P<n> / 'P<n> <CUR>') whose number isn't in keep_periods.
+
+    Non-period sheets (e.g. Methodology) are always kept. Returns the removed sheet names. Used on
+    the first run of a year so the fresh year file carries only the period(s) actually run — not the
+    template's example periods.
+    """
+    keep = set(keep_periods)
+    removed = []
+    for name in list(wb.sheetnames):
+        m = re.match(r"^P(\d+)($|\s)", name.strip())
+        if m and int(m.group(1)) not in keep:
+            del wb[name]
+            removed.append(name)
+    return removed
 
 
 _EXT_REF_RE = re.compile(r"\[\d+\]")   # external-workbook reference marker, e.g. [1]Sheet!$A$1
@@ -388,10 +509,19 @@ def _drop_external_defined_names(wb) -> None:
             pass
 
 
-def save_workbook_to_bytes(wb) -> bytes:
+def save_workbook_to_bytes(wb, source_bytes: bytes | None = None) -> bytes:
+    """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
+    loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
+    otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
+    corrupting notes). See core.comment_repair.
+    """
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    out = buf.getvalue()
+    if source_bytes:
+        from .comment_repair import repair_comment_layer
+        out = repair_comment_layer(out, source_bytes)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -449,16 +579,26 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         result.messages.append("master has no period sheet to build from -> skipped")
         return result
     if base_name not in write_wb.sheetnames:
-        _clone_sheet(write_wb, label_base, base_name)
+        # Clone the period sheet from a template that exists IN THE WRITE workbook (which, when
+        # appending to an existing year file, may no longer hold the master's template period).
+        write_tmpl = find_template_period_sheet(write_wb)
+        if write_tmpl is None:
+            result.messages.append("write workbook has no period sheet to clone from -> skipped")
+            return result
+        _clone_sheet(write_wb, write_tmpl, base_name)
+        _clear_entity_data(write_wb[base_name], cfg)   # new period: no inherited data under entities
 
     # Currency: USD -> base sheet; otherwise 'P{period} {CUR}', cloned from the base sheet.
     target_name = period_sheet_name(src.month, src.currency)
     if target_name not in write_wb.sheetnames:
         _clone_sheet(write_wb, base_name, target_name)
+        _clear_entity_data(write_wb[target_name], cfg)   # new currency sheet also starts blank
     result.sheet = target_name
 
     ws = values_wb[label_base]
     write_ws = write_wb[target_name]
+    _set_period_date(write_ws, src.month, src.year)   # PERIOD label (A) + period end date (B)
+    write_ws.freeze_panes = "C10"                     # freeze columns A–B and rows 1–9
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 

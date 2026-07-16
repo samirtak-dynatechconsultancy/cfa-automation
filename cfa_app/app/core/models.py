@@ -103,8 +103,11 @@ class VerifyResult:
 @dataclass
 class RunResult:
     run_id: str
-    status: str = "queued"        # queued | running | done | error
+    status: str = "queued"        # queued | running | awaiting | done | error | cancelled
     message: str = ""
+    # Set when a run is paused for a user decision (output file locked). Holds the produced bytes
+    # and where to save them; never serialised to the UI.
+    pending: dict | None = None
     output_name: str | None = None
     output_url: str | None = None
     files: list = field(default_factory=list)     # list[FileResult]
