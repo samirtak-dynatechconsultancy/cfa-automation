@@ -304,7 +304,10 @@ class RunManager:
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
             stage("Saving the filled workbook…")
-            out_bytes = save_workbook_to_bytes(write_wb)
+            # Repair the comment layer against whatever we loaded the workbook from (the existing
+            # year file when appending, else the master template) so Excel Online accepts the file.
+            comment_source = year_bytes if (not initial and year_bytes is not None) else master_bytes
+            out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source)
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")

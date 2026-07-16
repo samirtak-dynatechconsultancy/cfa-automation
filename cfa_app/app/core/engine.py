@@ -500,10 +500,19 @@ def _drop_external_defined_names(wb) -> None:
             pass
 
 
-def save_workbook_to_bytes(wb) -> bytes:
+def save_workbook_to_bytes(wb, source_bytes: bytes | None = None) -> bytes:
+    """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
+    loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
+    otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
+    corrupting notes). See core.comment_repair.
+    """
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    out = buf.getvalue()
+    if source_bytes:
+        from .comment_repair import repair_comment_layer
+        out = repair_comment_layer(out, source_bytes)
+    return out
 
 
 # ---------------------------------------------------------------------------
