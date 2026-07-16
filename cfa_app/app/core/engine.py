@@ -351,12 +351,21 @@ def validate_master(values_wb, year: int, period: int, master_name: str) -> list
 
 
 def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
-    """Duplicate a sheet (period or currency), best-effort copying conditional formats."""
+    """Duplicate a sheet (period or currency), best-effort copying conditional formats.
+
+    A new period/currency sheet starts WITHOUT the source sheet's comments/notes: copy_worksheet
+    carries them over, but a freshly created period should be blank of annotations (this run only
+    fills data). Existing period sheets are never cloned, so their user notes are preserved.
+    """
     if target_name in write_wb.sheetnames:
         return
     src_ws = write_wb[src_name]
     new_ws = write_wb.copy_worksheet(src_ws)      # copies values, styles, dimensions, merges
     new_ws.title = target_name
+    for row in new_ws.iter_rows():                # drop carried-over comments/notes
+        for cell in row:
+            if cell.comment is not None:
+                cell.comment = None
     try:  # copy_worksheet does NOT carry conditional formatting; re-add the rules
         for cf in src_ws.conditional_formatting:
             for rule in cf.rules:
