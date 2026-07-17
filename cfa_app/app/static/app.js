@@ -224,6 +224,7 @@ async function startRun() {
       body: JSON.stringify(body),
     });
     try { localStorage.setItem("cfa_run_id", run_id); } catch (e) {}
+    pollRun._lastOk = Date.now();          // start a fresh give-up window for this run
     pollRun(run_id);
   } catch (e) {
     el("spinner").className = "spinner bad";
@@ -234,9 +235,12 @@ async function startRun() {
   }
 }
 
+const POLL_GIVEUP_MS = 180000;   // only declare failure after this long with no good response
+
 async function pollRun(runId) {
   try {
     const r = await api("/api/runs/" + runId);
+    pollRun._lastOk = Date.now();          // a good response resets the give-up window
     renderRun(r);
     if (r.status === "queued" || r.status === "running") {
       setTimeout(() => pollRun(runId), 1500);
@@ -246,9 +250,18 @@ async function pollRun(runId) {
       el("runBtn").disabled = false;
     }
   } catch (e) {
+    // A single busy worker (openpyxl holds the GIL during a file) can make Azure's front-end return
+    // a transient 502 for the odd status poll while the run keeps going server-side. Don't treat one
+    // failed poll as fatal: keep polling, and only surface an error if the server stays unreachable
+    // for a sustained stretch (a real outage, not a momentary hiccup).
+    if (pollRun._lastOk === undefined) pollRun._lastOk = Date.now();
+    if (Date.now() - pollRun._lastOk < POLL_GIVEUP_MS) {
+      setTimeout(() => pollRun(runId), 3000);   // back off a little while the worker is busy
+      return;
+    }
     el("spinner").className = "spinner bad";
     el("spinner").textContent = "✕";
-    el("stageText").textContent = "Something went wrong.";
+    el("stageText").textContent = "Lost contact with the server.";
     el("runMessage").textContent = e.message;
     el("runBtn").disabled = false;
   }
@@ -267,6 +280,7 @@ async function resolveLock(runId, action) {
     renderRun(r);
     if (r.status === "running" || r.status === "queued") {
       el("runBtn").disabled = true;     // it's executing now (proceed/recheck-freed); follow it
+      pollRun._lastOk = Date.now();     // fresh give-up window as polling resumes
       pollRun(runId);
     } else {
       el("runBtn").disabled = false;
@@ -485,6 +499,7 @@ function attachRun(id, r) {
   renderRun(r);
   if (r.status === "queued" || r.status === "running") {
     el("runBtn").disabled = true;
+    pollRun._lastOk = Date.now();                           // fresh give-up window on re-attach
     pollRun(id);                                            // keep following it live
   } else if (r.status === "awaiting") {
     el("runBtn").disabled = true;                          // still waiting on the lock decision
