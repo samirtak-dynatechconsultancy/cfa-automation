@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from ..core.discovery import select_sources
 from ..core.engine import (
     hide_configured_rows,
-    hide_period_gridlines,
     keep_only_periods,
     load_master_pair,
     load_write_workbook,
@@ -304,7 +303,6 @@ class RunManager:
             hidden = hide_configured_rows(write_wb, cfg)
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
-            hide_period_gridlines(write_wb)    # clean look on ALL period sheets, not just this run's
             stage("Saving the filled workbook…")
             # Repair the comment layer against whatever we loaded the workbook from (the existing
             # year file when appending, else the master template) so Excel Online accepts the file.
