@@ -374,6 +374,56 @@ def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
         pass
 
 
+def _copy_sheet_from_template(src_ws, dst_wb, title: str):
+    """Recreate `src_ws` as a new sheet `title` in a DIFFERENT workbook `dst_wb`.
+
+    openpyxl's copy_worksheet only works within one workbook, so a new period sheet has been cloned
+    from a sibling period already in the year file — which carries that period's data/highlights. To
+    start every new period from the pristine master template instead, we copy the master's template
+    sheet (from the read-only `values_wb`) across workbooks: values + styles, column/row sizes,
+    merges, freeze panes and conditional formatting. Comments and hyperlinks are intentionally NOT
+    copied — a fresh period starts blank of annotations, and entity data is cleared separately.
+    """
+    from copy import copy
+    if title in dst_wb.sheetnames:
+        return dst_wb[title]
+    new_ws = dst_wb.create_sheet(title=title)
+    try:
+        new_ws.sheet_format = copy(src_ws.sheet_format)
+        new_ws.sheet_properties = copy(src_ws.sheet_properties)
+        new_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+    except Exception:
+        pass
+    new_ws.freeze_panes = src_ws.freeze_panes
+    for key, dim in src_ws.column_dimensions.items():
+        nd = copy(dim); nd.worksheet = new_ws
+        new_ws.column_dimensions[key] = nd
+    for idx, dim in src_ws.row_dimensions.items():
+        nd = copy(dim); nd.worksheet = new_ws
+        new_ws.row_dimensions[idx] = nd
+    for row in src_ws.iter_rows():
+        for cell in row:
+            if cell.value is None and not cell.has_style:
+                continue
+            nc = new_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                nc.font = copy(cell.font)
+                nc.fill = copy(cell.fill)
+                nc.border = copy(cell.border)
+                nc.alignment = copy(cell.alignment)
+                nc.protection = copy(cell.protection)
+                nc.number_format = cell.number_format
+    for rng in list(src_ws.merged_cells.ranges):
+        new_ws.merge_cells(str(rng))
+    try:  # conditional formatting isn't carried by cell copy; re-add each rule
+        for cf in src_ws.conditional_formatting:
+            for rule in cf.rules:
+                new_ws.conditional_formatting.add(str(cf.sqref), copy(rule))
+    except Exception:
+        pass
+    return new_ws
+
+
 _NO_FILL = PatternFill(fill_type=None)
 
 
@@ -579,13 +629,11 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         result.messages.append("master has no period sheet to build from -> skipped")
         return result
     if base_name not in write_wb.sheetnames:
-        # Clone the period sheet from a template that exists IN THE WRITE workbook (which, when
-        # appending to an existing year file, may no longer hold the master's template period).
-        write_tmpl = find_template_period_sheet(write_wb)
-        if write_tmpl is None:
-            result.messages.append("write workbook has no period sheet to clone from -> skipped")
-            return result
-        _clone_sheet(write_wb, write_tmpl, base_name)
+        # Always build a NEW period sheet from the PRISTINE master template (values_wb is read-only
+        # and never mutated), not from a sibling period already in the year file — otherwise the new
+        # period would inherit the previous period's data/highlights. Cross-workbook copy because
+        # values_wb and write_wb are separate workbooks.
+        _copy_sheet_from_template(values_wb[label_base], write_wb, base_name)
         _clear_entity_data(write_wb[base_name], cfg)   # new period: no inherited data under entities
 
     # Currency: USD -> base sheet; otherwise 'P{period} {CUR}', cloned from the base sheet.
