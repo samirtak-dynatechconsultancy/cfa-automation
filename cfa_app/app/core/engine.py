@@ -521,6 +521,22 @@ def hide_configured_rows(write_wb, cfg) -> int:
     return total
 
 
+def hide_period_gridlines(write_wb) -> int:
+    """Turn OFF gridlines on every period sheet for the clean, boxless look.
+
+    The master template's cells have no borders and no fill in the data area, and it carries Excel's
+    default (gridlines shown) — which draws a grid around every cell. Forcing gridlines off on ALL
+    period sheets each run gives the clean look and keeps every period consistent (not just the ones
+    written this run).
+    """
+    n = 0
+    for name in write_wb.sheetnames:
+        if re.match(r"^P\d+($|\s)", name.strip()):
+            write_wb[name].sheet_view.showGridLines = False
+            n += 1
+    return n
+
+
 def keep_only_periods(wb, keep_periods) -> list[str]:
     """Remove period sheets (P<n> / 'P<n> <CUR>') whose number isn't in keep_periods.
 
