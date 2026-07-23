@@ -647,6 +647,7 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     write_ws = write_wb[target_name]
     _set_period_date(write_ws, src.month, src.year)   # PERIOD label (A) + period end date (B)
     write_ws.freeze_panes = "C10"                     # freeze columns A–B and rows 1–9
+    write_ws.sheet_view.showGridLines = False         # clean look (the template hides gridlines)
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 
