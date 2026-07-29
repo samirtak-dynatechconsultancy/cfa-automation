@@ -374,6 +374,65 @@ def _clone_sheet(write_wb, src_name: str, target_name: str) -> None:
         pass
 
 
+def _copy_sheet_from_template(src_ws, dst_wb, title: str):
+    """Recreate `src_ws` as a new sheet `title` in a DIFFERENT workbook `dst_wb`.
+
+    openpyxl's copy_worksheet only works within one workbook, so a new period sheet has been cloned
+    from a sibling period already in the year file — which carries that period's data/highlights. To
+    start every new period from the pristine master template instead, we copy the master's template
+    sheet (from the read-only `values_wb`) across workbooks: values + styles, column/row sizes,
+    merges, freeze panes and conditional formatting. Comments and hyperlinks are intentionally NOT
+    copied — a fresh period starts blank of annotations, and entity data is cleared separately.
+    """
+    from copy import copy
+    if title in dst_wb.sheetnames:
+        return dst_wb[title]
+    new_ws = dst_wb.create_sheet(title=title)
+    try:
+        new_ws.sheet_format = copy(src_ws.sheet_format)
+        new_ws.sheet_properties = copy(src_ws.sheet_properties)
+        # Keep gridlines exactly as the template has them (the template shows them). New period sheets
+        # should match the template's look, so inherit its gridline setting rather than forcing it.
+        new_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+    except Exception:
+        pass
+    new_ws.freeze_panes = src_ws.freeze_panes
+    # Copy column/row GEOMETRY only (width, height, hidden, outline). Do NOT carry a dimension's raw
+    # style index: it points into the SOURCE workbook's style table, but the destination is a
+    # DIFFERENT workbook (the existing year file when appending), whose style table is ordered
+    # differently — so the same index resolves to a foreign style and paints a thin border on every
+    # cell of that column/row, producing a full grid the template never had. Clearing _style makes
+    # empty cells fall back to the default (borderless) style; per-cell styles are copied faithfully
+    # below, so cells with real content keep the template's exact formatting.
+    for key, dim in src_ws.column_dimensions.items():
+        nd = copy(dim); nd.worksheet = new_ws; nd._style = None
+        new_ws.column_dimensions[key] = nd
+    for idx, dim in src_ws.row_dimensions.items():
+        nd = copy(dim); nd.worksheet = new_ws; nd._style = None
+        new_ws.row_dimensions[idx] = nd
+    for row in src_ws.iter_rows():
+        for cell in row:
+            if cell.value is None and not cell.has_style:
+                continue
+            nc = new_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                nc.font = copy(cell.font)
+                nc.fill = copy(cell.fill)
+                nc.border = copy(cell.border)
+                nc.alignment = copy(cell.alignment)
+                nc.protection = copy(cell.protection)
+                nc.number_format = cell.number_format
+    for rng in list(src_ws.merged_cells.ranges):
+        new_ws.merge_cells(str(rng))
+    try:  # conditional formatting isn't carried by cell copy; re-add each rule
+        for cf in src_ws.conditional_formatting:
+            for rule in cf.rules:
+                new_ws.conditional_formatting.add(str(cf.sqref), copy(rule))
+    except Exception:
+        pass
+    return new_ws
+
+
 _NO_FILL = PatternFill(fill_type=None)
 
 
@@ -471,6 +530,22 @@ def hide_configured_rows(write_wb, cfg) -> int:
     return total
 
 
+def show_period_gridlines(write_wb) -> int:
+    """Turn ON gridlines on every period sheet, matching the template (which shows them).
+
+    Forcing gridlines on across ALL period sheets each run keeps every period consistent and REPAIRS
+    any sheet a previous run had turned them off on (existing period sheets are never rebuilt, so a
+    one-time force-on is the only way to restore them). Non-period sheets (e.g. Methodology) are left
+    untouched.
+    """
+    n = 0
+    for name in write_wb.sheetnames:
+        if re.match(r"^P\d+($|\s)", name.strip()):
+            write_wb[name].sheet_view.showGridLines = True
+            n += 1
+    return n
+
+
 def keep_only_periods(wb, keep_periods) -> list[str]:
     """Remove period sheets (P<n> / 'P<n> <CUR>') whose number isn't in keep_periods.
 
@@ -509,18 +584,25 @@ def _drop_external_defined_names(wb) -> None:
             pass
 
 
-def save_workbook_to_bytes(wb, source_bytes: bytes | None = None) -> bytes:
+def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
+                           master_bytes: bytes | None = None,
+                           new_comment_sheets: set[str] | None = None) -> bytes:
     """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
     loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
     otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
     corrupting notes). See core.comment_repair.
+
+    `master_bytes` (the template) + `new_comment_sheets` (period sheets created THIS run) additionally
+    carry the template sheet's comment onto those new sheets — the existing same-period note handling
+    is untouched.
     """
     buf = io.BytesIO()
     wb.save(buf)
     out = buf.getvalue()
     if source_bytes:
         from .comment_repair import repair_comment_layer
-        out = repair_comment_layer(out, source_bytes)
+        out = repair_comment_layer(out, source_bytes, master_bytes=master_bytes,
+                                   new_comment_sheets=new_comment_sheets)
     return out
 
 
@@ -579,13 +661,11 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
         result.messages.append("master has no period sheet to build from -> skipped")
         return result
     if base_name not in write_wb.sheetnames:
-        # Clone the period sheet from a template that exists IN THE WRITE workbook (which, when
-        # appending to an existing year file, may no longer hold the master's template period).
-        write_tmpl = find_template_period_sheet(write_wb)
-        if write_tmpl is None:
-            result.messages.append("write workbook has no period sheet to clone from -> skipped")
-            return result
-        _clone_sheet(write_wb, write_tmpl, base_name)
+        # Always build a NEW period sheet from the PRISTINE master template (values_wb is read-only
+        # and never mutated), not from a sibling period already in the year file — otherwise the new
+        # period would inherit the previous period's data/highlights. Cross-workbook copy because
+        # values_wb and write_wb are separate workbooks.
+        _copy_sheet_from_template(values_wb[label_base], write_wb, base_name)
         _clear_entity_data(write_wb[base_name], cfg)   # new period: no inherited data under entities
 
     # Currency: USD -> base sheet; otherwise 'P{period} {CUR}', cloned from the base sheet.
