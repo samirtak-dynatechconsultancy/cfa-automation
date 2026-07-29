@@ -391,7 +391,12 @@ def _copy_sheet_from_template(src_ws, dst_wb, title: str):
     try:
         new_ws.sheet_format = copy(src_ws.sheet_format)
         new_ws.sheet_properties = copy(src_ws.sheet_properties)
-        new_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+        # Clean, boxless look at birth: never inherit the template's shown gridlines (the grey grid
+        # drawn in EVERY cell). This only hides that grid — the template's real cell borders (the
+        # row-7 box, the row-9 line, the column-A edge) are copied faithfully below and kept. A later
+        # hide_period_gridlines() pass re-enforces this at save; setting it here too means a future
+        # revert of that pass can't silently bring the grid back on new period sheets.
+        new_ws.sheet_view.showGridLines = False
     except Exception:
         pass
     new_ws.freeze_panes = src_ws.freeze_panes
