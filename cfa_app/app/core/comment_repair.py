@@ -25,6 +25,7 @@ import io
 import logging
 import posixpath
 import re
+import uuid
 import zipfile
 
 log = logging.getLogger("cfa.comment_repair")
@@ -132,14 +133,28 @@ def _unique_part(existing: set[str], path: str) -> str:
     return p
 
 
-def repair_comment_layer(out_bytes: bytes, source_bytes: bytes) -> bytes:
+def repair_comment_layer(out_bytes: bytes, source_bytes: bytes,
+                         master_bytes: bytes | None = None,
+                         new_comment_sheets: set[str] | None = None) -> bytes:
     """Return `out_bytes` with its comment layer replaced by Excel-native parts from `source_bytes`.
+
+    The name-matched transplant from `source_bytes` is UNCHANGED — same-period reruns keep their notes
+    exactly as before. Additionally, when `master_bytes` (the template) and `new_comment_sheets` (the
+    period sheets created THIS run) are given, the template sheet's comment is grafted onto those new
+    sheets — the same "carry the note over" idea, only the source is the template excel. This runs as a
+    separate, isolated pass so it can never affect the existing behaviour.
 
     Falls back to the (normalised, else original) openpyxl bytes on any error so the result is never
     worse than what openpyxl produced.
     """
     try:
-        return _repair(out_bytes, source_bytes)
+        result = _repair(out_bytes, source_bytes)
+        if master_bytes and new_comment_sheets:
+            try:
+                result = _graft_template_comments(result, master_bytes, new_comment_sheets)
+            except Exception:               # graft is optional — never worsen the repaired output
+                log.exception("template-comment graft failed; keeping repaired output")
+        return result
     except Exception:                       # never regress below plain openpyxl output
         log.exception("comment-layer repair failed; falling back to normalise-only")
         try:
@@ -352,3 +367,132 @@ def _edit_content_types(ct: str, *, add: dict[str, str], need_vml_default: bool,
     if inject:
         ct = ct.replace("</Types>", "".join(inject) + "</Types>", 1)
     return ct
+
+
+# ---------------------------------------------------------------------------
+# Template-comment graft (additive; leaves the name-matched repair above untouched)
+# ---------------------------------------------------------------------------
+
+def _comment_source_sheet(names: dict[str, bytes]) -> tuple[str | None, dict[str, str]]:
+    """Find the first sheet in `names` that carries comment parts; return (part_path, parts)."""
+    for _nm, part in _sheet_name_to_part(names).items():
+        parts = _sheet_comment_parts(part, names)
+        if parts:
+            return part, parts
+    return None, {}
+
+
+def _new_guid() -> str:
+    return "{" + str(uuid.uuid4()).upper() + "}"
+
+
+def _graft_template_comments(out_bytes: bytes, master_bytes: bytes,
+                             new_sheets: set[str]) -> bytes:
+    """Copy the master TEMPLATE sheet's comment onto the given NEW period sheets.
+
+    Purely additive and byte-faithful (preserves threaded comments): only touches sheets named in
+    `new_sheets` that don't already carry a comment, so nothing the name-matched repair produced is
+    changed. Each target gets a FRESH comment GUID so Excel never sees the same threaded-comment id
+    on two sheets. Returns the input bytes unchanged if there is nothing to do.
+    """
+    mnames, _ = _read_zip(master_bytes)
+    _tmpl_part, tmpl_parts = _comment_source_sheet(mnames)
+    if not tmpl_parts:
+        return out_bytes                       # template has no comment -> nothing to carry
+
+    out, order = _read_zip(out_bytes)
+    out_name2part = _sheet_name_to_part(out)
+    existing_parts = set(out)
+
+    old_guid = None
+    if tmpl_parts.get("threaded") and tmpl_parts["threaded"] in mnames:
+        mm = re.search(r'\bid="(\{[^"]+\})"',
+                       mnames[tmpl_parts["threaded"]].decode("utf-8", "replace"))
+        old_guid = mm.group(1) if mm else None
+
+    ct_add: dict[str, str] = {}
+    need_vml_default = False
+    added_threaded = False
+    grafted = False
+
+    for name in new_sheets:
+        out_part = out_name2part.get(name)
+        if not out_part:
+            continue
+        out_rels_path = posixpath.join(posixpath.dirname(out_part), "_rels",
+                                       posixpath.basename(out_part) + ".rels")
+        rels_xml = out.get(out_rels_path, b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                           b'<Relationships xmlns="%s"></Relationships>' % _NS_REL.encode()
+                           ).decode("utf-8", "replace")
+        rels = _rels(rels_xml)
+        if any(r["Type"] in _COMMENT_REL_TYPES for r in rels):
+            continue                           # already has a comment -> leave it alone
+
+        new_guid = _new_guid()
+        used_ids = {r["Id"] for r in rels}
+        new_rels = list(rels)
+
+        def _graft(kind, folder, base, rel_type, ct_type, rewrite_guid=False):
+            nonlocal need_vml_default
+            if kind not in tmpl_parts or tmpl_parts[kind] not in mnames:
+                return None
+            data = mnames[tmpl_parts[kind]]
+            if rewrite_guid and old_guid:
+                data = data.replace(old_guid.encode(), new_guid.encode())
+            dst = _unique_part(existing_parts, f"{folder}/{base}")
+            out[dst] = data
+            rid = _fresh_id(used_ids)
+            tgt = posixpath.relpath(dst, posixpath.dirname(out_part))
+            new_rels.append({"Id": rid, "Type": rel_type, "Target": tgt, "Mode": None})
+            if ct_type:
+                ct_add["/" + dst] = ct_type
+            return rid
+
+        _graft("comments", "xl", "comments1.xml", _T_COMMENTS, _CT_COMMENTS, rewrite_guid=True)
+        v_id = _graft("vml", "xl/drawings", "vmlDrawing1.vml", _T_VML, "")
+        if v_id:
+            need_vml_default = True
+        t_id = _graft("threaded", "xl/threadedComments", "threadedComment1.xml",
+                      _T_THREADED, _CT_THREADED, rewrite_guid=True)
+        if t_id:
+            added_threaded = True
+
+        # Wire the sheet's <legacyDrawing> to the grafted VML.
+        if v_id and out_part in out:
+            ld = (f'<legacyDrawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/'
+                  f'2006/relationships" r:id="{v_id}"/>')
+            sxml = out[out_part].decode("utf-8", "replace")
+            if "<legacyDrawing" in sxml:
+                sxml = re.sub(r"<legacyDrawing\b[^>]*?/>", ld, sxml, count=1)
+            else:
+                sxml = sxml.replace("</worksheet>", ld + "</worksheet>")
+            out[out_part] = sxml.encode("utf-8")
+
+        out[out_rels_path] = _render_rels(new_rels).encode("utf-8")
+        grafted = True
+
+    if not grafted:
+        return out_bytes
+
+    # persons.xml (shared) from the master, wired to the workbook — needed for threaded comments.
+    if added_threaded and "xl/persons/person.xml" not in out:
+        mp = next((p for p in mnames if re.match(r"xl/persons/person.*\.xml$", p)), None)
+        if mp:
+            out["xl/persons/person.xml"] = mnames[mp]
+            ct_add["/xl/persons/person.xml"] = _CT_PERSON
+    if added_threaded and "xl/persons/person.xml" in out:
+        wb_rels_path = "xl/_rels/workbook.xml.rels"
+        wb_rels = out.get(wb_rels_path, b"").decode("utf-8", "replace")
+        rlist = _rels(wb_rels)
+        if not any(r["Type"] == _T_PERSON for r in rlist):
+            used = {r["Id"] for r in rlist}
+            rlist.append({"Id": _fresh_id(used), "Type": _T_PERSON,
+                          "Target": "persons/person.xml", "Mode": None})
+            out[wb_rels_path] = _render_rels(rlist).encode("utf-8")
+
+    out["[Content_Types].xml"] = _edit_content_types(
+        out["[Content_Types].xml"].decode("utf-8", "replace"),
+        add=ct_add, need_vml_default=need_vml_default, present_parts=set(out)).encode("utf-8")
+
+    order = [n for n in order if n in out] + [n for n in out if n not in order]
+    return _write_zip(out, order)
