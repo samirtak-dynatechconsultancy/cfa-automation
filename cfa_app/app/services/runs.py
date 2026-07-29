@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from ..core.discovery import select_sources
 from ..core.engine import (
     hide_configured_rows,
+    show_period_gridlines,
     keep_only_periods,
     load_master_pair,
     load_write_workbook,
@@ -303,7 +304,9 @@ class RunManager:
             hidden = hide_configured_rows(write_wb, cfg)
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
-            # Gridlines are intentionally left as the template has them (shown) — not disabled.
+            # Keep gridlines ON across every period sheet (match the template); also repairs any
+            # sheet a previous run had turned them off on.
+            show_period_gridlines(write_wb)
             stage("Saving the filled workbook…")
             # Repair the comment layer against whatever we loaded the workbook from (the existing
             # year file when appending, else the master template) so Excel Online accepts the file.
