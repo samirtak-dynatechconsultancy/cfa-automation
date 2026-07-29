@@ -196,6 +196,10 @@ class RunManager:
                     emit(f"appending onto latest output '{existing['name']}' "
                          f"({len(year_bytes):,} bytes)")
 
+            # Sheets present BEFORE this run's transfer — used to identify the period sheets created
+            # this run so the template's comment can be carried onto them (existing sheets untouched).
+            pre_sheets = set(write_wb.sheetnames)
+
             # 2. Scan the source tree ONCE, pruning branches for other years/periods.
             period_set = set(periods)
 
@@ -311,7 +315,10 @@ class RunManager:
             # Repair the comment layer against whatever we loaded the workbook from (the existing
             # year file when appending, else the master template) so Excel Online accepts the file.
             comment_source = year_bytes if (not initial and year_bytes is not None) else master_bytes
-            out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source)
+            new_sheets = {s for s in write_wb.sheetnames if s not in pre_sheets}
+            out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source,
+                                               master_bytes=master_bytes,
+                                               new_comment_sheets=new_sheets)
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")
