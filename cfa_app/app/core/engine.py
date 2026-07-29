@@ -400,11 +400,18 @@ def _copy_sheet_from_template(src_ws, dst_wb, title: str):
     except Exception:
         pass
     new_ws.freeze_panes = src_ws.freeze_panes
+    # Copy column/row GEOMETRY only (width, height, hidden, outline). Do NOT carry a dimension's raw
+    # style index: it points into the SOURCE workbook's style table, but the destination is a
+    # DIFFERENT workbook (the existing year file when appending), whose style table is ordered
+    # differently — so the same index resolves to a foreign style and paints a thin border on every
+    # cell of that column/row, producing a full grid the template never had. Clearing _style makes
+    # empty cells fall back to the default (borderless) style; per-cell styles are copied faithfully
+    # below, so cells with real content keep the template's exact formatting.
     for key, dim in src_ws.column_dimensions.items():
-        nd = copy(dim); nd.worksheet = new_ws
+        nd = copy(dim); nd.worksheet = new_ws; nd._style = None
         new_ws.column_dimensions[key] = nd
     for idx, dim in src_ws.row_dimensions.items():
-        nd = copy(dim); nd.worksheet = new_ws
+        nd = copy(dim); nd.worksheet = new_ws; nd._style = None
         new_ws.row_dimensions[idx] = nd
     for row in src_ws.iter_rows():
         for cell in row:
