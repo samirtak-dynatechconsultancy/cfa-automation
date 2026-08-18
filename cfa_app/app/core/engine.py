@@ -472,6 +472,153 @@ def _clear_entity_data(ws, cfg: DetectionConfig) -> None:
                 cell.fill = _NO_FILL
 
 
+def _rebuild_cf_shifted_rows(write_ws, insert_row: int) -> None:
+    """Shift conditional-formatting ranges DOWN by one after insert_rows(insert_row).
+
+    Row version of _rebuild_cf_shifted: openpyxl.insert_rows() moves cells but leaves CF ranges, so
+    the red 'NOT EQUAL' highlight would misalign. Rows at/after insert_row move down one; ranges
+    spanning the insertion point are extended by one.
+    """
+    from openpyxl.formatting.formatting import ConditionalFormattingList
+    from openpyxl.worksheet.cell_range import CellRange
+
+    XL_MAX_ROW = 1048576
+    blocks = [(cf.sqref, list(cf.rules)) for cf in write_ws.conditional_formatting]
+    new = ConditionalFormattingList()
+    for sqref, rules in blocks:
+        parts = []
+        for cr in sqref.ranges:
+            mn = min(cr.min_row + 1, XL_MAX_ROW) if cr.min_row >= insert_row else cr.min_row
+            mx = min(cr.max_row + 1, XL_MAX_ROW) if cr.max_row >= insert_row else cr.max_row
+            parts.append(CellRange(min_col=cr.min_col, min_row=mn,
+                                   max_col=cr.max_col, max_row=mx).coord)
+        joined = " ".join(parts)
+        for rule in rules:
+            new.add(joined, rule)
+    write_ws.conditional_formatting = new
+
+
+def _first_entity_col(ws, cfg: DetectionConfig, entity_row: int) -> int | None:
+    """Column index of the first entity-number cell on `entity_row` (where entity columns begin)."""
+    get = _ws_getter(ws)
+    max_col = min(ws.max_column or 1, 400)
+    for c in range(1, max_col + 1):
+        v = get(entity_row, c)
+        if v is not None and _ENTITY_CELL_RE.match(str(v).strip()):
+            return c
+    return None
+
+
+def _copy_template_row(template_ws, tr: int, write_ws, dst_row: int,
+                       tpl_first_ent: int, w_first_ent: int) -> None:
+    """Fill a freshly-inserted write row from the template's row `tr`.
+
+    Label columns (before the entity block) get the template's value + style; entity columns get a
+    blank value styled like the row above (so the new row looks like its neighbours).
+    """
+    from copy import copy
+
+    def _style(src, dst):
+        if src.has_style:
+            dst.font = copy(src.font); dst.fill = copy(src.fill); dst.border = copy(src.border)
+            dst.alignment = copy(src.alignment); dst.protection = copy(src.protection)
+            dst.number_format = src.number_format
+
+    for c in range(1, tpl_first_ent):                       # FORM / LINE / description labels
+        s = template_ws.cell(row=tr, column=c)
+        d = write_ws.cell(row=dst_row, column=c)
+        d.value = s.value
+        _style(s, d)
+    last_col = min(write_ws.max_column or w_first_ent, 400)
+    for c in range(w_first_ent, last_col + 1):              # entity cells: blank, styled like above
+        d = write_ws.cell(row=dst_row, column=c)
+        d.value = None
+        above = write_ws.cell(row=dst_row - 1, column=c)
+        _style(above, d)
+
+
+def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
+                       only_periods: set | None = None) -> dict[str, int]:
+    """Insert every template (FORM, LINE) row that a period sheet is missing (add-only).
+
+    Existing period sheets built from an older template can lack rows the current template has. For
+    each `P#` sheet, walk the template's keyed rows in order and, for any key absent from the sheet,
+    insert a copy positioned right after the preceding template row that IS present. Extra rows the
+    sheet has but the template doesn't are left untouched. `only_periods` (period numbers) limits the
+    sync to those periods; None syncs every period sheet. Returns {sheet_name: rows_inserted}.
+    """
+    tpl_name = find_template_period_sheet(values_wb)
+    if tpl_name is None:
+        return {}
+    tpl_ws = values_wb[tpl_name]
+    tget = _ws_getter(tpl_ws)
+    t_maxcol = min(tpl_ws.max_column or 1, 200)
+    tth = find_target_header(tget, cfg.header_scan_rows, t_maxcol, cfg)
+    t_erow = find_entity_header_row(tget, cfg.entity_row_scan, t_maxcol)
+    if tth is None or t_erow is None:
+        return {}
+    t_hr, t_fc, t_lc = tth
+    tpl_first_ent = _first_entity_col(tpl_ws, cfg, t_erow)
+    if tpl_first_ent is None:
+        return {}
+
+    # Template's ordered keyed rows (skip blank/separator rows).
+    tpl_rows = []
+    for r in range(t_hr + 1, (tpl_ws.max_row or t_hr) + 1):
+        f = norm_key(tget(r, t_fc)); l = norm_key(tget(r, t_lc))
+        if f is None and l is None:
+            continue
+        tpl_rows.append((r, (f, l)))
+
+    out: dict[str, int] = {}
+    for name in list(write_wb.sheetnames):
+        m = re.match(r"^P(\d+)($|\s)", name.strip())
+        if not m:
+            continue
+        if only_periods is not None and int(m.group(1)) not in only_periods:
+            continue
+        ws = write_wb[name]
+        wget = _ws_getter(ws)
+        w_maxcol = min(ws.max_column or 1, 400)
+        wth = find_target_header(wget, cfg.header_scan_rows, w_maxcol, cfg)
+        w_erow = find_entity_header_row(wget, cfg.entity_row_scan, w_maxcol)
+        if wth is None or w_erow is None:
+            continue
+        w_hr, w_fc, w_lc = wth
+        w_first_ent = _first_entity_col(ws, cfg, w_erow) or tpl_first_ent
+
+        # Map each existing key to its ORIGINAL rows (pre-insert), consumed in order.
+        out_map: dict = {}
+        for r in range(w_hr + 1, (ws.max_row or w_hr) + 1):
+            f = norm_key(wget(r, w_fc)); l = norm_key(wget(r, w_lc))
+            if f is None and l is None:
+                continue
+            out_map.setdefault((f, l), []).append(r)
+        ptr = {k: 0 for k in out_map}
+
+        anchor_orig = w_hr      # original-coord row after which to insert; header to start
+        offset = 0              # rows inserted so far (current_row = orig_row + offset)
+        inserted = 0
+        for _tr, key in tpl_rows:
+            rows = out_map.get(key, [])
+            p = ptr.get(key, 0)
+            while p < len(rows) and rows[p] <= anchor_orig:
+                p += 1
+            if p < len(rows):                    # present -> advance the anchor onto it
+                anchor_orig = rows[p]
+                ptr[key] = p + 1
+            else:                                # missing -> insert after the anchor
+                pos = anchor_orig + offset + 1
+                ws.insert_rows(pos, 1)
+                _rebuild_cf_shifted_rows(ws, pos)
+                _copy_template_row(tpl_ws, _tr, ws, pos, tpl_first_ent, w_first_ent)
+                offset += 1
+                inserted += 1
+        if inserted:
+            out[name] = inserted
+    return out
+
+
 def load_master_pair(data: bytes):
     """Load the master TWICE from the same bytes, both with data_only=True.
 
@@ -708,19 +855,21 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
             msg += f" under region '{region}'"
         result.messages.append(msg)
 
-    th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+    # Index target rows by (FORM, LINE) ON THE WRITE SHEET, so values land on the sheet's actual
+    # rows regardless of structural drift from the template (e.g. rows sync_template_rows inserted,
+    # or a sheet built from an older template). For an aligned sheet this equals the template index.
+    th = find_target_header(wget, cfg.header_scan_rows, w_cols, cfg)
     if th is None:
         result.messages.append(f"could not locate FORM/LINE header in '{base_name}' -> skipped")
         return result
     t_header_row, t_form_col, t_line_col = th
 
-    # Index target rows by (FORM, LINE), ascending.
     t_first = t_header_row + 1
     t_keys: dict = {}
-    last_row = ws.max_row or t_first
+    last_row = write_ws.max_row or t_first
     for r in range(t_first, last_row + 1):
-        f = norm_key(get(r, t_form_col))
-        l = norm_key(get(r, t_line_col))
+        f = norm_key(wget(r, t_form_col))
+        l = norm_key(wget(r, t_line_col))
         if f is None and l is None:
             continue
         t_keys.setdefault((f, l), []).append(r)
