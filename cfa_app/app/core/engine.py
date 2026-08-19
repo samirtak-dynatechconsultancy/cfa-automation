@@ -940,19 +940,23 @@ def verify_output(output_bytes: bytes, master_bytes: bytes, sources: list[Source
             max_col = min(lbl_ws.max_column or 1, 200)
             out_cols = min(out_ws.max_column or max_col, 400)
 
-            # Entity column comes from the OUTPUT (it includes any column we had to add).
+            # Entity column and row index BOTH come from the OUTPUT sheet, so the check locates each
+            # (FORM, LINE) exactly where the writer placed it — correct even when the sheet's rows
+            # differ from the master (extra rows, or rows sync_template_rows inserted). The output's
+            # labels are materialised static values (formulas were resolved on the write copy), so
+            # reading them back is reliable.
             ent = find_entity_row_and_col(oget, cfg.entity_row_scan, out_cols, src.entity)
-            th = find_target_header(lget, cfg.header_scan_rows, max_col, cfg)
+            th = find_target_header(oget, cfg.header_scan_rows, out_cols, cfg)
             if ent is None or th is None:
                 continue
             _erow, ecol = ent
             t_header_row, t_form_col, t_line_col = th
 
             t_keys: dict = {}
-            last_row = lbl_ws.max_row or t_header_row
+            last_row = out_ws.max_row or t_header_row
             for r in range(t_header_row + 1, last_row + 1):
-                f = norm_key(lget(r, t_form_col))
-                l = norm_key(lget(r, t_line_col))
+                f = norm_key(oget(r, t_form_col))
+                l = norm_key(oget(r, t_line_col))
                 if f is None and l is None:
                     continue
                 t_keys.setdefault((f, l), []).append(r)
