@@ -829,27 +829,32 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     get = _ws_getter(ws)
     max_col = min(ws.max_column or 1, 200)
 
-    # The entity-number row is stable (insertions are column-wise). Detect it on the label sheet.
-    entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
-    if entity_row is None:
+    # Detect the entity-number row ON THE WRITE SHEET. It usually matches the template's, but a sheet
+    # whose header was shifted (e.g. a row inserted above it) carries its entity numbers on a
+    # different row — and the hyperlink / company / column placement must follow the SHEET, not the
+    # template, or they land on the wrong row (the 'links on the row above the entity number' bug).
+    wget = _ws_getter(write_ws)
+    w_cols = min(write_ws.max_column or max_col, 400)
+    w_entity_row = find_entity_header_row(wget, cfg.entity_row_scan, w_cols)
+    if w_entity_row is None:                                    # fall back to the template's row
+        w_entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+    if w_entity_row is None:
         result.messages.append(
             f"entity '{src.entity}' not found and no entity row detected in '{base_name}' -> skipped")
         return result
 
     # Resolve the entity's column ON THE WRITE SHEET, so it stays correct even when an earlier file
     # in this run inserted a new column (which shifts everything to its right on the write side only).
-    wget = _ws_getter(write_ws)
-    w_cols = min(write_ws.max_column or max_col, 400)
     found = find_entity_row_and_col(wget, cfg.entity_row_scan, w_cols, src.entity)
     if found is not None:
-        _entity_row, entity_col = found
+        w_entity_row, entity_col = found       # the sheet's ACTUAL row+col for this entity
     else:
         # Entity has no column yet -> add one (under its region block when known) and note it.
-        entity_col = _place_new_entity_column(write_ws, wget, entity_row, w_cols, src.entity, region)
+        entity_col = _place_new_entity_column(write_ws, wget, w_entity_row, w_cols, src.entity, region)
         result.entity_added = True
-        # Company name goes directly below the entity number (row 8 -> row 9 in the master).
+        # Company name goes directly below the entity number.
         if src.company:
-            write_ws.cell(row=entity_row + 1, column=entity_col).value = src.company
+            write_ws.cell(row=w_entity_row + 1, column=entity_col).value = src.company
         msg = f"entity '{src.entity}' was not in '{result.sheet}' — added as new column {entity_col}"
         if region:
             msg += f" under region '{region}'"
@@ -901,9 +906,10 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
             cell.fill = _DIFF_OVER_FILL
             result.highlighted += 1
 
-    # Make the entity number (row 8) a hyperlink to its source file on SharePoint.
+    # Make the entity-number cell a hyperlink to its source file on SharePoint (on the sheet's own
+    # entity row, so a shifted sheet doesn't get the link on the row above the numbers).
     if src.source_url:
-        _link_entity_cell(write_ws.cell(row=entity_row, column=entity_col), src.source_url)
+        _link_entity_cell(write_ws.cell(row=w_entity_row, column=entity_col), src.source_url)
 
     result.written = len(writes)
     result.status = "done"
