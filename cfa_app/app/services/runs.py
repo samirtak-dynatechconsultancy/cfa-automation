@@ -22,6 +22,7 @@ from ..core.engine import (
     load_write_workbook,
     read_source_from_bytes,
     save_workbook_to_bytes,
+    sync_template_rows,
     transfer_into_master,
     validate_master,
     verify_output,
@@ -195,6 +196,13 @@ class RunManager:
                     initial = False
                     emit(f"appending onto latest output '{existing['name']}' "
                          f"({len(year_bytes):,} bytes)")
+
+            # Add any template (FORM, LINE) rows an existing period sheet is missing (add-only), so
+            # this run can write to them and the sheet stays consistent with the current template.
+            added = sync_template_rows(values_wb, write_wb, cfg, only_periods=set(periods))
+            if added:
+                emit("added missing template row(s): "
+                     + ", ".join(f"{name} +{n}" for name, n in added.items()))
 
             # Sheets present BEFORE this run's transfer — used to identify the period sheets created
             # this run so the template's comment can be carried onto them (existing sheets untouched).
