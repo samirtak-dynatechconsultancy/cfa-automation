@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ..core.discovery import select_sources
 from ..core.engine import (
+    clear_separator_entity_data,
     hide_configured_rows,
     show_period_gridlines,
     keep_only_periods,
@@ -316,6 +317,11 @@ class RunManager:
             hidden = hide_configured_rows(write_wb, cfg)
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
+            # Remove any stale check values sitting on separator rows (no FORM/LINE label) — the
+            # writer never puts data there, so any such value is leftover from an older build.
+            cleared = clear_separator_entity_data(write_wb, cfg, only_periods=set(periods))
+            if cleared:
+                emit(f"cleared {cleared} stale value(s) from separator rows")
             # Keep gridlines ON across every period sheet (match the template); also repairs any
             # sheet a previous run had turned them off on.
             show_period_gridlines(write_wb)

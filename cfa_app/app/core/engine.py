@@ -619,6 +619,47 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
     return out
 
 
+def clear_separator_entity_data(write_wb, cfg: DetectionConfig,
+                                only_periods: set | None = None) -> int:
+    """Blank entity-column values on separator rows (FORM and LINE both empty) of period sheets.
+
+    A check value must never sit on a row without a FORM/LINE label — those are separators. Older
+    builds that wrote values by the template's row numbers could land data on such rows of a sheet
+    whose structure had drifted, leaving stale 'OK'/'NOT EQUAL' on blank rows. The current writer
+    can't create these (it targets rows by (FORM, LINE)), and this pass removes any that already
+    exist so a re-run self-heals. Only entity columns are touched (helper columns are left alone).
+    Returns the number of cells cleared.
+    """
+    total = 0
+    for name in write_wb.sheetnames:
+        m = re.match(r"^P(\d+)($|\s)", name.strip())
+        if not m:
+            continue
+        if only_periods is not None and int(m.group(1)) not in only_periods:
+            continue
+        ws = write_wb[name]
+        get = _ws_getter(ws)
+        max_col = min(ws.max_column or 1, 400)
+        th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+        entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+        if th is None or entity_row is None:
+            continue
+        header_row, form_col, line_col = th
+        entity_cols = [c for c in range(1, max_col + 1)
+                       if _ENTITY_CELL_RE.match(str(get(entity_row, c) or "").strip())]
+        for r in range(header_row + 1, (ws.max_row or header_row) + 1):
+            if norm_key(get(r, form_col)) is not None or norm_key(get(r, line_col)) is not None:
+                continue                                   # has a FORM or LINE label -> keep
+            for c in entity_cols:
+                cell = ws.cell(row=r, column=c)
+                if cell.value is not None:
+                    cell.value = None
+                    total += 1
+                if cell.fill is not None and cell.fill.fill_type is not None:
+                    cell.fill = _NO_FILL
+    return total
+
+
 def load_master_pair(data: bytes):
     """Load the master TWICE from the same bytes, both with data_only=True.
 

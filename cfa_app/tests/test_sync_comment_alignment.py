@@ -20,9 +20,9 @@ from openpyxl.comments import Comment                       # noqa: E402
 
 from app.core.detection import norm_key                     # noqa: E402
 from app.core.engine import (                               # noqa: E402
-    _ws_getter, find_entity_header_row, find_entity_row_and_col, find_target_header,
-    find_template_period_sheet, load_write_workbook, save_workbook_to_bytes, sync_template_rows,
-    transfer_into_master,
+    _ENTITY_CELL_RE, _ws_getter, clear_separator_entity_data, find_entity_header_row,
+    find_entity_row_and_col, find_target_header, find_template_period_sheet, load_write_workbook,
+    save_workbook_to_bytes, sync_template_rows, transfer_into_master,
 )
 from app.core.models import DetectionConfig, SourceData     # noqa: E402
 
@@ -192,6 +192,32 @@ def scenario_file_validity(mb):
     check("every XML part parses", not bad, f"bad={bad[:3]}")
 
 
+def scenario_clear_separator_rows(mb):
+    """Stale check values on a blank-FORM/LINE row are removed; labelled rows are untouched."""
+    print("Scenario 5: clear stale values from separator rows, keep labelled rows")
+    values_wb = openpyxl.load_workbook(io.BytesIO(mb), data_only=True)
+    tname = find_template_period_sheet(values_wb)
+    period = int(tname[1:].split()[0])
+    wb = load_write_workbook(mb)
+    for s in list(wb.sheetnames):
+        if s not in (tname, "Methodology"):
+            del wb[s]
+    ws = wb[tname]; g = _ws_getter(ws); mc = min(ws.max_column or 1, 400)
+    hr, fc, lc = find_target_header(g, cfg.header_scan_rows, mc, cfg)
+    er = find_entity_header_row(g, cfg.entity_row_scan, mc)
+    ecol = next(c for c in range(1, mc + 1) if _ENTITY_CELL_RE.match(str(g(er, c) or "").strip()))
+    sep_row = next(r for r in range(hr + 1, (ws.max_row or hr) + 1)
+                   if norm_key(g(r, fc)) is None and norm_key(g(r, lc)) is None)
+    lab_row = next(r for r in range(hr + 1, (ws.max_row or hr) + 1)
+                   if norm_key(g(r, fc)) is not None or norm_key(g(r, lc)) is not None)
+    ws.cell(row=sep_row, column=ecol).value = "OK"        # stale value on a separator row
+    ws.cell(row=lab_row, column=ecol).value = "NOT EQUAL"  # legit value on a labelled row
+    cleared = clear_separator_entity_data(wb, cfg, only_periods={period})
+    check("separator-row value was cleared", ws.cell(row=sep_row, column=ecol).value is None,
+          f"cleared={cleared}")
+    check("labelled-row value kept", ws.cell(row=lab_row, column=ecol).value == "NOT EQUAL")
+
+
 def main():
     if not MASTER.exists():
         print(f"SKIP: fixture not found: {MASTER}")
@@ -200,6 +226,7 @@ def main():
     scenario_missing_rows_and_comment_alignment(mb)
     scenario_no_change_preserves_comments(mb)
     scenario_write_by_key_on_shifted_sheet(mb)
+    scenario_clear_separator_rows(mb)
     scenario_file_validity(mb)
     passed = sum(1 for _, ok, _ in _results if ok)
     total = len(_results)
