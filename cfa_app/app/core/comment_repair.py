@@ -135,7 +135,8 @@ def _unique_part(existing: set[str], path: str) -> str:
 
 def repair_comment_layer(out_bytes: bytes, source_bytes: bytes,
                          master_bytes: bytes | None = None,
-                         new_comment_sheets: set[str] | None = None) -> bytes:
+                         new_comment_sheets: set[str] | None = None,
+                         changed_sheets: set[str] | None = None) -> bytes:
     """Return `out_bytes` with its comment layer replaced by Excel-native parts from `source_bytes`.
 
     The name-matched transplant from `source_bytes` is UNCHANGED — same-period reruns keep their notes
@@ -144,11 +145,17 @@ def repair_comment_layer(out_bytes: bytes, source_bytes: bytes,
     sheets — the same "carry the note over" idea, only the source is the template excel. This runs as a
     separate, isolated pass so it can never affect the existing behaviour.
 
+    `changed_sheets` are period sheets whose rows/columns were inserted THIS run (by
+    sync_template_rows, or by adding an entity column). For those, the source's comment coordinates
+    are stale — the cells (and openpyxl's own correctly-positioned comments) have shifted — so we do
+    NOT transplant; openpyxl's comments are kept and merely normalised (VML prefixes + relative
+    targets) so they stay Excel-valid AND correctly positioned.
+
     Falls back to the (normalised, else original) openpyxl bytes on any error so the result is never
     worse than what openpyxl produced.
     """
     try:
-        result = _repair(out_bytes, source_bytes)
+        result = _repair(out_bytes, source_bytes, changed_sheets or frozenset())
         if master_bytes and new_comment_sheets:
             try:
                 result = _graft_template_comments(result, master_bytes, new_comment_sheets)
@@ -218,7 +225,7 @@ def _make_targets_relative(rels_xml: str, rels_part: str) -> str | None:
     return fixed if changed else None
 
 
-def _repair(out_bytes: bytes, source_bytes: bytes) -> bytes:
+def _repair(out_bytes: bytes, source_bytes: bytes, changed_sheets: set[str] = frozenset()) -> bytes:
     out, order = _read_zip(out_bytes)
     src, _ = _read_zip(source_bytes)
 
@@ -233,6 +240,8 @@ def _repair(out_bytes: bytes, source_bytes: bytes) -> bytes:
     add_person_rel = False
 
     for name, out_part in out_name2part.items():
+        if name in changed_sheets:
+            continue      # rows/cols shifted this run -> keep openpyxl's own comments (normalised)
         src_part = src_name2part.get(name)
         if not src_part:
             continue                                   # cloned sheet -> handled by normalise pass

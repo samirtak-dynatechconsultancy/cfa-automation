@@ -733,7 +733,8 @@ def _drop_external_defined_names(wb) -> None:
 
 def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
                            master_bytes: bytes | None = None,
-                           new_comment_sheets: set[str] | None = None) -> bytes:
+                           new_comment_sheets: set[str] | None = None,
+                           changed_sheets: set[str] | None = None) -> bytes:
     """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
     loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
     otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
@@ -742,6 +743,10 @@ def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
     `master_bytes` (the template) + `new_comment_sheets` (period sheets created THIS run) additionally
     carry the template sheet's comment onto those new sheets — the existing same-period note handling
     is untouched.
+
+    `changed_sheets` are sheets whose rows/columns shifted this run (synced rows, added entity
+    columns); for those the source's comment coordinates are stale, so the comment layer is taken
+    from openpyxl's own (correctly-positioned) comments instead of transplanted from the source.
     """
     buf = io.BytesIO()
     wb.save(buf)
@@ -749,7 +754,8 @@ def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
     if source_bytes:
         from .comment_repair import repair_comment_layer
         out = repair_comment_layer(out, source_bytes, master_bytes=master_bytes,
-                                   new_comment_sheets=new_comment_sheets)
+                                   new_comment_sheets=new_comment_sheets,
+                                   changed_sheets=changed_sheets)
     return out
 
 

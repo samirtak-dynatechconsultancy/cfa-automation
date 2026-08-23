@@ -324,9 +324,14 @@ class RunManager:
             # year file when appending, else the master template) so Excel Online accepts the file.
             comment_source = year_bytes if (not initial and year_bytes is not None) else master_bytes
             new_sheets = {s for s in write_wb.sheetnames if s not in pre_sheets}
+            # Sheets whose rows/columns shifted this run (synced rows or added entity columns): their
+            # comments must come from openpyxl's own (moved) positions, not the source's stale coords.
+            changed_sheets = set(added) | {fr.sheet for fr in result.files
+                                           if fr.entity_added and fr.sheet}
             out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source,
                                                master_bytes=master_bytes,
-                                               new_comment_sheets=new_sheets)
+                                               new_comment_sheets=new_sheets,
+                                               changed_sheets=changed_sheets)
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")
