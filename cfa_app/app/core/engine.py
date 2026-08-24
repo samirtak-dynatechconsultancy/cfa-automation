@@ -928,9 +928,9 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
             continue
         t_keys.setdefault((f, l), []).append(r)
 
+    last_data_row = max((r for rows in t_keys.values() for r in rows), default=t_first)
     # If we added a new entity column, extend the red 'NOT EQUAL' highlight to it.
     if result.entity_added and t_keys:
-        last_data_row = max(r for rows in t_keys.values() for r in rows)
         _extend_not_equal_cf(write_ws, entity_col, t_first, last_data_row)
 
     writes = []           # (target_row, value, over_threshold)
@@ -947,6 +947,21 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     if not writes:
         result.messages.append("no lines matched -> nothing written")
         return result
+
+    # Refresh the WHOLE entity column from the source, so the sheet always reflects the CFA: clear
+    # existing values first (a manual edit, or a value for a (FORM, LINE) the source no longer
+    # reports, must not linger), then write the source values below. User highlights are preserved —
+    # only this tool's own over-threshold red fill is dropped (re-applied per this run's data). New
+    # columns are already blank, so skip them.
+    if not result.entity_added:
+        for r in range(t_first, last_data_row + 1):
+            cell = write_ws.cell(row=r, column=entity_col)
+            if cell.value is not None:
+                cell.value = None
+            fill = cell.fill
+            if fill is not None and fill.fill_type is not None \
+                    and "FFC7CE" in str(getattr(fill.fgColor, "rgb", "") or ""):
+                cell.fill = _NO_FILL
 
     for row, value, over in writes:
         cell = write_ws.cell(row=row, column=entity_col)
