@@ -498,6 +498,21 @@ def _rebuild_cf_shifted_rows(write_ws, insert_row: int) -> None:
     write_ws.conditional_formatting = new
 
 
+def _shift_row_dims_on_insert(write_ws, insert_row: int) -> None:
+    """Move each RowDimension (hidden flag, height) at/below insert_row down one, following its cells.
+
+    openpyxl.insert_rows() shifts cell CONTENT but NOT row_dimensions, so a row hidden by (FORM,LINE)
+    would keep its hidden flag on the old index -- hiding whatever content slid up into that row.
+    Reindex from the bottom up so we never clobber a not-yet-moved dimension.
+    """
+    dims = write_ws.row_dimensions
+    for r in sorted((idx for idx in list(dims) if idx >= insert_row), reverse=True):
+        rd = dims[r]
+        del dims[r]
+        rd.index = r + 1
+        dims[r + 1] = rd
+
+
 def _first_entity_col(ws, cfg: DetectionConfig, entity_row: int) -> int | None:
     """Column index of the first entity-number cell on `entity_row` (where entity columns begin)."""
     get = _ws_getter(ws)
@@ -612,6 +627,7 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
                 pos = anchor_orig + offset + 1
                 ws.insert_rows(pos, 1)
                 _rebuild_cf_shifted_rows(ws, pos)
+                _shift_row_dims_on_insert(ws, pos)
                 _copy_template_row(tpl_ws, _tr, ws, pos, tpl_first_ent, w_first_ent)
                 offset += 1
                 positions.append(pos)

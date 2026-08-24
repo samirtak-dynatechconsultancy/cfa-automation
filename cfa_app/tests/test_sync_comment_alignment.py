@@ -218,6 +218,45 @@ def scenario_clear_separator_rows(mb):
     check("labelled-row value kept", ws.cell(row=lab_row, column=ecol).value == "NOT EQUAL")
 
 
+def _hidden_keys(ws):
+    """Set of (FORM, LINE) for every hidden labelled row on the sheet."""
+    g = _ws_getter(ws); mc = min(ws.max_column or 1, 400)
+    hr, fc, lc = find_target_header(g, cfg.header_scan_rows, mc, cfg)
+    out = set()
+    for r in range(hr + 1, (ws.max_row or hr) + 1):
+        if ws.row_dimensions[r].hidden:
+            k = (norm_key(g(r, fc)), norm_key(g(r, lc)))
+            if k != (None, None):
+                out.add(k)
+    return out
+
+
+def scenario_hidden_rows_follow_insert(mb):
+    """Rows hidden by (FORM,LINE) stay hidden on the SAME line after sync inserts rows above them."""
+    print("Scenario 6: hidden rows follow their (FORM,LINE) through a sync insert")
+    values_wb = openpyxl.load_workbook(io.BytesIO(mb), data_only=True)
+    tname = find_template_period_sheet(values_wb)
+    yb = load_write_workbook(mb)
+    for s in list(yb.sheetnames):
+        if s not in (tname, "Methodology"):
+            del yb[s]
+    ws = yb[tname]; g = _ws_getter(ws); mc = min(ws.max_column or 1, 400)
+    hr, fc, lc = find_target_header(g, cfg.header_scan_rows, mc, cfg)
+    keyed = [r for r in range(hr + 1, (ws.max_row or hr) + 1)
+             if not (norm_key(g(r, fc)) is None and norm_key(g(r, lc)) is None)]
+    for dr in sorted([keyed[5], keyed[25]], reverse=True):   # force re-inserts above the hidden rows
+        ws.delete_rows(dr, 1)
+    before = _hidden_keys(ws)
+    year_bytes = save_workbook_to_bytes(yb)
+    wb = load_write_workbook(year_bytes)
+    added = sync_template_rows(values_wb, wb, cfg, only_periods={int(tname[1:].split()[0])})
+    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added), row_inserts=added)
+    after = _hidden_keys(openpyxl.load_workbook(io.BytesIO(out))[tname])
+    check("sync inserted rows above hidden rows", bool(added), f"added={added}")
+    check("the same (FORM,LINE) rows stay hidden", before == after,
+          f"lost={list(before - after)[:2]} gained={list(after - before)[:2]}")
+
+
 def main():
     if not MASTER.exists():
         print(f"SKIP: fixture not found: {MASTER}")
@@ -227,6 +266,7 @@ def main():
     scenario_no_change_preserves_comments(mb)
     scenario_write_by_key_on_shifted_sheet(mb)
     scenario_clear_separator_rows(mb)
+    scenario_hidden_rows_follow_insert(mb)
     scenario_file_validity(mb)
     passed = sum(1 for _, ok, _ in _results if ok)
     total = len(_results)
