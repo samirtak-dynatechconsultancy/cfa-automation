@@ -7,9 +7,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+import datetime
+
 from .config import get_settings
 from .logging_config import get_logger, setup_logging
 from .routers import runs, settings, sites, ui
+from .version import get_version_info
 
 setup_logging(get_settings().log_level)
 get_logger("app").info("CFA transfer app starting (graph_configured=%s)",
@@ -41,3 +44,12 @@ app.include_router(settings.router)
 @app.get("/health", tags=["ops"])
 def health():
     return {"status": "ok"}
+
+
+_STARTED_AT = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+@app.get("/version", tags=["ops"])
+def version():
+    """What code is actually running — open in a browser to confirm the deployed commit."""
+    return {**get_version_info(), "app_version": app.version, "started_at": _STARTED_AT}
