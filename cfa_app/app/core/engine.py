@@ -498,6 +498,21 @@ def _rebuild_cf_shifted_rows(write_ws, insert_row: int) -> None:
     write_ws.conditional_formatting = new
 
 
+def _shift_row_dims_on_insert(write_ws, insert_row: int) -> None:
+    """Move each RowDimension (hidden flag, height) at/below insert_row down one, following its cells.
+
+    openpyxl.insert_rows() shifts cell CONTENT but NOT row_dimensions, so a row hidden by (FORM,LINE)
+    would keep its hidden flag on the old index -- hiding whatever content slid up into that row.
+    Reindex from the bottom up so we never clobber a not-yet-moved dimension.
+    """
+    dims = write_ws.row_dimensions
+    for r in sorted((idx for idx in list(dims) if idx >= insert_row), reverse=True):
+        rd = dims[r]
+        del dims[r]
+        rd.index = r + 1
+        dims[r + 1] = rd
+
+
 def _first_entity_col(ws, cfg: DetectionConfig, entity_row: int) -> int | None:
     """Column index of the first entity-number cell on `entity_row` (where entity columns begin)."""
     get = _ws_getter(ws)
@@ -545,7 +560,8 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
     each `P#` sheet, walk the template's keyed rows in order and, for any key absent from the sheet,
     insert a copy positioned right after the preceding template row that IS present. Extra rows the
     sheet has but the template doesn't are left untouched. `only_periods` (period numbers) limits the
-    sync to those periods; None syncs every period sheet. Returns {sheet_name: rows_inserted}.
+    sync to those periods; None syncs every period sheet. Returns {sheet_name: [inserted row
+    positions]} (final row indices), so the comment layer can be shifted to match.
     """
     tpl_name = find_template_period_sheet(values_wb)
     if tpl_name is None:
@@ -598,7 +614,7 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
 
         anchor_orig = w_hr      # original-coord row after which to insert; header to start
         offset = 0              # rows inserted so far (current_row = orig_row + offset)
-        inserted = 0
+        positions = []          # FINAL row index of each inserted row (top-to-bottom => final)
         for _tr, key in tpl_rows:
             rows = out_map.get(key, [])
             p = ptr.get(key, 0)
@@ -611,12 +627,54 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
                 pos = anchor_orig + offset + 1
                 ws.insert_rows(pos, 1)
                 _rebuild_cf_shifted_rows(ws, pos)
+                _shift_row_dims_on_insert(ws, pos)
                 _copy_template_row(tpl_ws, _tr, ws, pos, tpl_first_ent, w_first_ent)
                 offset += 1
-                inserted += 1
-        if inserted:
-            out[name] = inserted
+                positions.append(pos)
+        if positions:
+            out[name] = positions
     return out
+
+
+def clear_separator_entity_data(write_wb, cfg: DetectionConfig,
+                                only_periods: set | None = None) -> int:
+    """Blank entity-column values on separator rows (FORM and LINE both empty) of period sheets.
+
+    A check value must never sit on a row without a FORM/LINE label — those are separators. Older
+    builds that wrote values by the template's row numbers could land data on such rows of a sheet
+    whose structure had drifted, leaving stale 'OK'/'NOT EQUAL' on blank rows. The current writer
+    can't create these (it targets rows by (FORM, LINE)), and this pass removes any that already
+    exist so a re-run self-heals. Only entity columns are touched (helper columns are left alone).
+    Returns the number of cells cleared.
+    """
+    total = 0
+    for name in write_wb.sheetnames:
+        m = re.match(r"^P(\d+)($|\s)", name.strip())
+        if not m:
+            continue
+        if only_periods is not None and int(m.group(1)) not in only_periods:
+            continue
+        ws = write_wb[name]
+        get = _ws_getter(ws)
+        max_col = min(ws.max_column or 1, 400)
+        th = find_target_header(get, cfg.header_scan_rows, max_col, cfg)
+        entity_row = find_entity_header_row(get, cfg.entity_row_scan, max_col)
+        if th is None or entity_row is None:
+            continue
+        header_row, form_col, line_col = th
+        entity_cols = [c for c in range(1, max_col + 1)
+                       if _ENTITY_CELL_RE.match(str(get(entity_row, c) or "").strip())]
+        for r in range(header_row + 1, (ws.max_row or header_row) + 1):
+            if norm_key(get(r, form_col)) is not None or norm_key(get(r, line_col)) is not None:
+                continue                                   # has a FORM or LINE label -> keep
+            for c in entity_cols:
+                cell = ws.cell(row=r, column=c)
+                if cell.value is not None:
+                    cell.value = None
+                    total += 1
+                if cell.fill is not None and cell.fill.fill_type is not None:
+                    cell.fill = _NO_FILL
+    return total
 
 
 def load_master_pair(data: bytes):
@@ -733,7 +791,9 @@ def _drop_external_defined_names(wb) -> None:
 
 def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
                            master_bytes: bytes | None = None,
-                           new_comment_sheets: set[str] | None = None) -> bytes:
+                           new_comment_sheets: set[str] | None = None,
+                           changed_sheets: set[str] | None = None,
+                           row_inserts: dict | None = None) -> bytes:
     """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
     loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
     otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
@@ -742,6 +802,10 @@ def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
     `master_bytes` (the template) + `new_comment_sheets` (period sheets created THIS run) additionally
     carry the template sheet's comment onto those new sheets — the existing same-period note handling
     is untouched.
+
+    `changed_sheets` are sheets whose rows/columns shifted this run (synced rows, added entity
+    columns); for those the source's comment coordinates are stale, so the comment layer is taken
+    from openpyxl's own (correctly-positioned) comments instead of transplanted from the source.
     """
     buf = io.BytesIO()
     wb.save(buf)
@@ -749,7 +813,8 @@ def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
     if source_bytes:
         from .comment_repair import repair_comment_layer
         out = repair_comment_layer(out, source_bytes, master_bytes=master_bytes,
-                                   new_comment_sheets=new_comment_sheets)
+                                   new_comment_sheets=new_comment_sheets,
+                                   changed_sheets=changed_sheets, row_inserts=row_inserts)
     return out
 
 
@@ -879,9 +944,9 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
             continue
         t_keys.setdefault((f, l), []).append(r)
 
+    last_data_row = max((r for rows in t_keys.values() for r in rows), default=t_first)
     # If we added a new entity column, extend the red 'NOT EQUAL' highlight to it.
     if result.entity_added and t_keys:
-        last_data_row = max(r for rows in t_keys.values() for r in rows)
         _extend_not_equal_cf(write_ws, entity_col, t_first, last_data_row)
 
     writes = []           # (target_row, value, over_threshold)
@@ -898,6 +963,21 @@ def transfer_into_master(values_wb, write_wb, src: SourceData, cfg: DetectionCon
     if not writes:
         result.messages.append("no lines matched -> nothing written")
         return result
+
+    # Refresh the WHOLE entity column from the source, so the sheet always reflects the CFA: clear
+    # existing values first (a manual edit, or a value for a (FORM, LINE) the source no longer
+    # reports, must not linger), then write the source values below. User highlights are preserved —
+    # only this tool's own over-threshold red fill is dropped (re-applied per this run's data). New
+    # columns are already blank, so skip them.
+    if not result.entity_added:
+        for r in range(t_first, last_data_row + 1):
+            cell = write_ws.cell(row=r, column=entity_col)
+            if cell.value is not None:
+                cell.value = None
+            fill = cell.fill
+            if fill is not None and fill.fill_type is not None \
+                    and "FFC7CE" in str(getattr(fill.fgColor, "rgb", "") or ""):
+                cell.fill = _NO_FILL
 
     for row, value, over in writes:
         cell = write_ws.cell(row=row, column=entity_col)

@@ -18,13 +18,13 @@ timestamped copy goes to the output folder.</p>
                placeholder="2026" style="width:90px">
       </label>
       <label class="inline">Period from
-        <select id="period_from" style="width:80px" onchange="syncPeriodTo()">
+        <select id="period_from" style="width:80px" onchange="onPeriodFromChange()">
           <option value="">P?</option>
           {% for p in range(1, 13) %}<option value="{{ p }}">P{{ p }}</option>{% endfor %}
         </select>
       </label>
       <label class="inline">to
-        <select id="period_to" style="width:80px">
+        <select id="period_to" style="width:80px" onchange="onPeriodToChange()">
           <option value="">P?</option>
           {% for p in range(1, 13) %}<option value="{{ p }}">P{{ p }}</option>{% endfor %}
         </select>

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ..core.discovery import select_sources
 from ..core.engine import (
+    clear_separator_entity_data,
     hide_configured_rows,
     show_period_gridlines,
     keep_only_periods,
@@ -202,7 +203,7 @@ class RunManager:
             added = sync_template_rows(values_wb, write_wb, cfg, only_periods=set(periods))
             if added:
                 emit("added missing template row(s): "
-                     + ", ".join(f"{name} +{n}" for name, n in added.items()))
+                     + ", ".join(f"{name} +{len(pos)}" for name, pos in added.items()))
 
             # Sheets present BEFORE this run's transfer — used to identify the period sheets created
             # this run so the template's comment can be carried onto them (existing sheets untouched).
@@ -316,6 +317,13 @@ class RunManager:
             hidden = hide_configured_rows(write_wb, cfg)
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
+            # Remove any stale check values sitting on separator rows (no FORM/LINE label) on EVERY
+            # period sheet — a value there is never valid (the writer only targets labelled rows), so
+            # a blank FORM/LINE row must be empty. Runs across all periods so it self-heals the whole
+            # workbook, not just the period(s) run this time.
+            cleared = clear_separator_entity_data(write_wb, cfg)
+            if cleared:
+                emit(f"cleared {cleared} stale value(s) from separator rows")
             # Keep gridlines ON across every period sheet (match the template); also repairs any
             # sheet a previous run had turned them off on.
             show_period_gridlines(write_wb)
@@ -324,9 +332,14 @@ class RunManager:
             # year file when appending, else the master template) so Excel Online accepts the file.
             comment_source = year_bytes if (not initial and year_bytes is not None) else master_bytes
             new_sheets = {s for s in write_wb.sheetnames if s not in pre_sheets}
+            # Sheets whose rows/columns shifted this run (synced rows or added entity columns): their
+            # comments must come from openpyxl's own (moved) positions, not the source's stale coords.
+            changed_sheets = set(added) | {fr.sheet for fr in result.files
+                                           if fr.entity_added and fr.sheet}
             out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source,
                                                master_bytes=master_bytes,
-                                               new_comment_sheets=new_sheets)
+                                               new_comment_sheets=new_sheets,
+                                               changed_sheets=changed_sheets, row_inserts=added)
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")

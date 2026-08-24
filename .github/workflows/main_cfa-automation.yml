@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Write build info (so /version works even without .git at runtime)
+        run: |
+          python -c "import json,subprocess as s; f=lambda x: s.run(['git','log','-1','--format='+x],capture_output=True,text=True).stdout.strip(); json.dump({'commit':f('%H'),'subject':f('%s'),'date':f('%ci'),'branch':'${{ github.ref_name }}'}, open('cfa_app/app/_build_info.json','w'))"
+          cat cfa_app/app/_build_info.json
+
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:

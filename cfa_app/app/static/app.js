@@ -175,10 +175,35 @@ function setTarget(target, driveId, itemId, name) {
 // ---------------------------------------------------------------------------
 // Run + polling
 // ---------------------------------------------------------------------------
-// Default the "to" period to "from" if the user hasn't set it (single-period convenience).
-function syncPeriodTo() {
+// Keep the period range coherent (from <= to). Picking a "from" past "to" drags "to" up;
+// picking a "to" before "from" drags "from" down. Empty "to" defaults to "from".
+function onPeriodFromChange() {
+  const from = el("period_from"), to = el("period_to");
+  if (!from.value) return;
+  const f = parseInt(from.value, 10), t = parseInt(to.value, 10);
+  if (!to.value || t < f) to.value = from.value;
+}
+
+function onPeriodToChange() {
+  const from = el("period_from"), to = el("period_to");
+  if (!to.value) return;
+  const f = parseInt(from.value, 10), t = parseInt(to.value, 10);
+  if (!from.value || t < f) from.value = to.value;
+}
+
+// Pre-fill year = current year and both periods = current month - 1 (last closed period),
+// only when the field is still empty so a server default or a resumed run is never clobbered.
+function initPeriodDefaults() {
+  const from = el("period_from");
+  if (!from) return;                              // run page only
+  const now = new Date();
+  const yearEl = el("year");
+  if (yearEl && !yearEl.value) yearEl.value = String(now.getFullYear());
+  let prev = now.getMonth();                      // getMonth() is 0-based => already (current month - 1)
+  if (prev < 1) prev = 12;                        // January -> P12
   const to = el("period_to");
-  if (!to.value) to.value = el("period_from").value;
+  if (from && !from.value) from.value = String(prev);
+  if (to && !to.value) to.value = String(prev);
 }
 
 async function startRun() {
@@ -532,4 +557,5 @@ async function resumeRun() {
   } catch (e) {}
 }
 
+initPeriodDefaults();
 resumeRun();
