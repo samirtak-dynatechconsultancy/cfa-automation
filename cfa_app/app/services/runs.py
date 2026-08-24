@@ -317,9 +317,11 @@ class RunManager:
             hidden = hide_configured_rows(write_wb, cfg)
             if hidden:
                 emit(f"hid {hidden} configured row(s) across the period sheet(s)")
-            # Remove any stale check values sitting on separator rows (no FORM/LINE label) — the
-            # writer never puts data there, so any such value is leftover from an older build.
-            cleared = clear_separator_entity_data(write_wb, cfg, only_periods=set(periods))
+            # Remove any stale check values sitting on separator rows (no FORM/LINE label) on EVERY
+            # period sheet — a value there is never valid (the writer only targets labelled rows), so
+            # a blank FORM/LINE row must be empty. Runs across all periods so it self-heals the whole
+            # workbook, not just the period(s) run this time.
+            cleared = clear_separator_entity_data(write_wb, cfg)
             if cleared:
                 emit(f"cleared {cleared} stale value(s) from separator rows")
             # Keep gridlines ON across every period sheet (match the template); also repairs any
