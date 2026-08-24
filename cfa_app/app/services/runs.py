@@ -203,7 +203,7 @@ class RunManager:
             added = sync_template_rows(values_wb, write_wb, cfg, only_periods=set(periods))
             if added:
                 emit("added missing template row(s): "
-                     + ", ".join(f"{name} +{n}" for name, n in added.items()))
+                     + ", ".join(f"{name} +{len(pos)}" for name, pos in added.items()))
 
             # Sheets present BEFORE this run's transfer — used to identify the period sheets created
             # this run so the template's comment can be carried onto them (existing sheets untouched).
@@ -339,7 +339,7 @@ class RunManager:
             out_bytes = save_workbook_to_bytes(write_wb, source_bytes=comment_source,
                                                master_bytes=master_bytes,
                                                new_comment_sheets=new_sheets,
-                                               changed_sheets=changed_sheets)
+                                               changed_sheets=changed_sheets, row_inserts=added)
             stage("Double-checking every value…")
             result.verify = verify_output(out_bytes, master_bytes, sources, cfg)
             emit(f"verified {result.verify.checked} cells — {result.verify.mismatches} mismatch(es)")

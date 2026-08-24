@@ -545,7 +545,8 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
     each `P#` sheet, walk the template's keyed rows in order and, for any key absent from the sheet,
     insert a copy positioned right after the preceding template row that IS present. Extra rows the
     sheet has but the template doesn't are left untouched. `only_periods` (period numbers) limits the
-    sync to those periods; None syncs every period sheet. Returns {sheet_name: rows_inserted}.
+    sync to those periods; None syncs every period sheet. Returns {sheet_name: [inserted row
+    positions]} (final row indices), so the comment layer can be shifted to match.
     """
     tpl_name = find_template_period_sheet(values_wb)
     if tpl_name is None:
@@ -598,7 +599,7 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
 
         anchor_orig = w_hr      # original-coord row after which to insert; header to start
         offset = 0              # rows inserted so far (current_row = orig_row + offset)
-        inserted = 0
+        positions = []          # FINAL row index of each inserted row (top-to-bottom => final)
         for _tr, key in tpl_rows:
             rows = out_map.get(key, [])
             p = ptr.get(key, 0)
@@ -613,9 +614,9 @@ def sync_template_rows(values_wb, write_wb, cfg: DetectionConfig,
                 _rebuild_cf_shifted_rows(ws, pos)
                 _copy_template_row(tpl_ws, _tr, ws, pos, tpl_first_ent, w_first_ent)
                 offset += 1
-                inserted += 1
-        if inserted:
-            out[name] = inserted
+                positions.append(pos)
+        if positions:
+            out[name] = positions
     return out
 
 
@@ -775,7 +776,8 @@ def _drop_external_defined_names(wb) -> None:
 def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
                            master_bytes: bytes | None = None,
                            new_comment_sheets: set[str] | None = None,
-                           changed_sheets: set[str] | None = None) -> bytes:
+                           changed_sheets: set[str] | None = None,
+                           row_inserts: dict | None = None) -> bytes:
     """Serialise the workbook. When `source_bytes` (the master / existing year file the workbook was
     loaded from) is given, repair the comment layer so Excel Online accepts the file — openpyxl
     otherwise emits comment VML/relationships that Excel rejects (breaking copy/download and
@@ -796,7 +798,7 @@ def save_workbook_to_bytes(wb, source_bytes: bytes | None = None,
         from .comment_repair import repair_comment_layer
         out = repair_comment_layer(out, source_bytes, master_bytes=master_bytes,
                                    new_comment_sheets=new_comment_sheets,
-                                   changed_sheets=changed_sheets)
+                                   changed_sheets=changed_sheets, row_inserts=row_inserts)
     return out
 
 

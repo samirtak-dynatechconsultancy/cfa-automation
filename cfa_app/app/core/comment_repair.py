@@ -136,7 +136,8 @@ def _unique_part(existing: set[str], path: str) -> str:
 def repair_comment_layer(out_bytes: bytes, source_bytes: bytes,
                          master_bytes: bytes | None = None,
                          new_comment_sheets: set[str] | None = None,
-                         changed_sheets: set[str] | None = None) -> bytes:
+                         changed_sheets: set[str] | None = None,
+                         row_inserts: dict | None = None) -> bytes:
     """Return `out_bytes` with its comment layer replaced by Excel-native parts from `source_bytes`.
 
     The name-matched transplant from `source_bytes` is UNCHANGED — same-period reruns keep their notes
@@ -155,7 +156,7 @@ def repair_comment_layer(out_bytes: bytes, source_bytes: bytes,
     worse than what openpyxl produced.
     """
     try:
-        result = _repair(out_bytes, source_bytes, changed_sheets or frozenset())
+        result = _repair(out_bytes, source_bytes, changed_sheets or frozenset(), row_inserts)
         if master_bytes and new_comment_sheets:
             try:
                 result = _graft_template_comments(result, master_bytes, new_comment_sheets)
@@ -225,7 +226,51 @@ def _make_targets_relative(rels_xml: str, rels_part: str) -> str | None:
     return fixed if changed else None
 
 
-def _repair(out_bytes: bytes, source_bytes: bytes, changed_sheets: set[str] = frozenset()) -> bytes:
+def _row_mapper(inserts):
+    """A function src_row -> output_row after `inserts` (final row positions) were added above it."""
+    ins = sorted(inserts)
+
+    def mapper(src_row: int) -> int:
+        out = src_row
+        for p in ins:
+            if p <= out:                       # a row inserted at/above this position pushes it down
+                out += 1
+        return out
+    return mapper
+
+
+def _shift_comment_refs(xml: str, mapper) -> str:
+    """Shift the row in every ref="<col><row>" (comments1.xml / threadedComment1.xml)."""
+    return re.sub(r'ref="([A-Z]+)(\d+)"',
+                  lambda m: f'ref="{m.group(1)}{mapper(int(m.group(2)))}"', xml)
+
+
+def _shift_vml_rows(vml: str, mapper) -> str:
+    """Shift each comment shape's anchor row(s) in the legacy VML (x:Row is 0-based)."""
+    def shift_shape(m: re.Match) -> str:
+        block = m.group(0)
+        rm = re.search(r"<x:Row>(\d+)</x:Row>", block)
+        if not rm:
+            return block
+        r0 = int(rm.group(1))
+        delta = mapper(r0 + 1) - (r0 + 1)          # x:Row is 0-based -> source row is r0+1
+        if delta == 0:
+            return block
+        block = block.replace(rm.group(0), f"<x:Row>{r0 + delta}</x:Row>", 1)
+        am = re.search(r"<x:Anchor>([^<]+)</x:Anchor>", block)
+        if am:
+            parts = [x.strip() for x in am.group(1).split(",")]
+            if len(parts) == 8:                    # …,TopRow(2),…,BottomRow(6),… (0-based rows)
+                parts[2] = str(int(parts[2]) + delta)
+                parts[6] = str(int(parts[6]) + delta)
+                block = block.replace(am.group(0), "<x:Anchor>" + ",".join(parts) + "</x:Anchor>", 1)
+        return block
+    return re.sub(r"<v:shape\b.*?</v:shape>", shift_shape, vml, flags=re.S)
+
+
+def _repair(out_bytes: bytes, source_bytes: bytes, changed_sheets: set[str] = frozenset(),
+            row_inserts: dict | None = None) -> bytes:
+    row_inserts = row_inserts or {}
     out, order = _read_zip(out_bytes)
     src, _ = _read_zip(source_bytes)
 
@@ -240,8 +285,10 @@ def _repair(out_bytes: bytes, source_bytes: bytes, changed_sheets: set[str] = fr
     add_person_rel = False
 
     for name, out_part in out_name2part.items():
-        if name in changed_sheets:
-            continue      # rows/cols shifted this run -> keep openpyxl's own comments (normalised)
+        # Transplant the source's comment parts byte-for-byte for EVERY named sheet (incl. ones the
+        # run changed). Reading comments straight from the source zip is deterministic and works in
+        # any environment; the old "normalise changed sheets" path relied on openpyxl re-saving
+        # comments, which silently dropped them on some hosts (e.g. PythonAnywhere).
         src_part = src_name2part.get(name)
         if not src_part:
             continue                                   # cloned sheet -> handled by normalise pass
@@ -263,12 +310,20 @@ def _repair(out_bytes: bytes, source_bytes: bytes, changed_sheets: set[str] = fr
         used_ids = {r["Id"] for r in keep}
         new_rels = list(keep)
         vml_rel_id = None
+        # If sync inserted rows into this sheet, shift the transplanted comments down to match.
+        mapper = _row_mapper(row_inserts[name]) if row_inserts.get(name) else None
 
         def _graft(kind: str, folder: str, base: str, rel_type: str, ct_type: str) -> str | None:
             if kind not in parts or parts[kind] not in src:
                 return None
             dst = _unique_part(existing_parts, f"{folder}/{base}")
-            out[dst] = src[parts[kind]]
+            data = src[parts[kind]]
+            if mapper is not None:                     # re-align comment cells to the inserted rows
+                txt = data.decode("utf-8", "replace")
+                txt = _shift_vml_rows(txt, mapper) if dst.endswith(".vml") \
+                    else _shift_comment_refs(txt, mapper)
+                data = txt.encode("utf-8")
+            out[dst] = data
             rid = _fresh_id(used_ids)
             tgt = posixpath.relpath(dst, posixpath.dirname(out_part))
             new_rels.append({"Id": rid, "Type": rel_type, "Target": tgt, "Mode": None})

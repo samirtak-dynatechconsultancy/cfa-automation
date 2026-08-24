@@ -88,7 +88,7 @@ def scenario_missing_rows_and_comment_alignment(mb):
 
     wb = load_write_workbook(year_bytes)
     added = sync_template_rows(values_wb, wb, cfg, only_periods={int(tname[1:].split()[0])})
-    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added))
+    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added), row_inserts=added)
     w = openpyxl.load_workbook(io.BytesIO(out))
 
     check("rows were synced", bool(added), f"added={added}")
@@ -111,7 +111,7 @@ def scenario_no_change_preserves_comments(mb):
     year_bytes = save_workbook_to_bytes(yb)
     wb = load_write_workbook(year_bytes)
     added = sync_template_rows(values_wb, wb, cfg, only_periods={int(tname[1:].split()[0])})
-    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added))
+    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added), row_inserts=added)
     after = sum(1 for row in openpyxl.load_workbook(io.BytesIO(out))[tname].iter_rows()
                 for c in row if c.comment)
     check("no rows added on an aligned sheet", not added, f"added={added}")
@@ -175,7 +175,7 @@ def scenario_file_validity(mb):
     year_bytes = save_workbook_to_bytes(yb)
     wb = load_write_workbook(year_bytes)
     added = sync_template_rows(values_wb, wb, cfg, only_periods={int(tname[1:].split()[0])})
-    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added))
+    out = save_workbook_to_bytes(wb, source_bytes=year_bytes, changed_sheets=set(added), row_inserts=added)
     try:
         openpyxl.load_workbook(io.BytesIO(out)); reload_ok = True
     except Exception:
